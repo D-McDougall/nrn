@@ -189,6 +189,13 @@ if(NOT NRN_ENABLE_PYTHON_DYNAMIC AND NRN_LEGACY_HOC_MODULE)
 
 endif()
 
+# _config_params.py needs a Python literal, while NRN_ENABLE_MPI can be any CMake truth value
+# (ON, TRUE, 1, ...).
+if(NRN_ENABLE_MPI)
+  set(NRN_PYTHON_CONFIG_MPI_ENABLED True)
+else()
+  set(NRN_PYTHON_CONFIG_MPI_ENABLED False)
+endif()
 configure_file(_config_params.py.in "${PROJECT_BINARY_DIR}/lib/python/neuron/_config_params.py"
                @ONLY)
 

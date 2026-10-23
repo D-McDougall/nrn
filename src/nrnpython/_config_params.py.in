@@ -3,3 +3,6 @@ supported_python_versions = [@NRN_DYNAMIC_PYTHON_LIST_OF_VERSION_STRINGS@]
 # Needed so we can figure out the prefix and suffix of nrnmech at runtime
 mechanism_prefix = "@CMAKE_SHARED_LIBRARY_PREFIX@"
 mechanism_suffix = "@CMAKE_SHARED_LIBRARY_SUFFIX@"
+# Whether this NEURON was built with MPI (NRN_ENABLE_MPI). The Python interface
+# uses it to decide whether NEURON_INIT_MPI applies (neuron/_interface/_startup.py).
+mpi_enabled = @NRN_PYTHON_CONFIG_MPI_ENABLED@
