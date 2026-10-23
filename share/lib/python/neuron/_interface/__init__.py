@@ -12,6 +12,7 @@ from .api import (
     hoc_locked,
     symbol_array_dims,
     _ERR_BUF_SIZE,
+    _METHODS_CALL_FUNC_OFFSET,
     _METHODS_HOC_NRNPYTHON_OFFSET,
     _METHODS_MPI_ALLTOALL_TYPE_OFFSET,
     _METHODS_PRAXIS_EFUN_OFFSET,
@@ -49,6 +50,7 @@ from .api import (
     _nrn_symbol_array_length,
     _nrn_symbol_dataptr,
     _nrn_symbol_is_array,
+    _pop_hoc_python_value,
     _structure_change_cnt,
     install_stdout_redirect,
     _nrn_objgetarg,
@@ -371,6 +373,59 @@ def _register_praxis_efun():
 
 
 _register_praxis_efun()
+
+
+def _register_call_func():
+    """HocCommand::func_call with a Python callable (e.g. RangeVarPlot's).
+
+    Core pushes the arguments on the HOC stack and calls methods.call_func,
+    which must pop them, call the callable and return its value as a double
+    (0 if it is not a number), like NEURON's func_call (nrnpy_p2h.cpp).
+    *err nonzero (or err NULL) asks for a failure to be a HOC error; *err == 0
+    asks only for *err = 1 (RangeVarPlot probing where a value exists). A
+    callback cannot raise into core, so a reported failure is stashed and
+    raised when the HOC call returns.
+    """
+
+    def _call_func(callable_obj, narg, err):
+        report = not err or err[0] != 0
+        remaining = narg
+
+        def argument_popped():
+            nonlocal remaining
+            remaining -= 1
+
+        try:
+            args = []
+            while remaining:
+                args.append(_pop_hoc_python_value(on_pop=argument_popped))
+            args.reverse()
+            result = _call_at_top_level(_unwrap_pythonobject(callable_obj), args)
+            value = float(result) if isinstance(result, numbers.Real) else 0.0
+            if err:
+                err[0] = 0
+            return value
+        except BaseException as exc:
+            # Leave the HOC stack as core expects even when a pop failed.
+            try:
+                while remaining:
+                    _pop_hoc_python_value(discard=True, on_pop=argument_popped)
+            except BaseException:
+                pass
+            if report:
+                _stash_callback_exc(exc)
+            if err:
+                err[0] = 1
+            return 0.0
+
+    global _mn_call_func_methods_cb
+    _mn_call_func_methods_cb = ctypes.CFUNCTYPE(
+        ctypes.c_double, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int)
+    )(_call_func)
+    _install_methods_slot(_METHODS_CALL_FUNC_OFFSET, _mn_call_func_methods_cb)
+
+
+_register_call_func()
 
 
 def _register_vector_apply_callable():

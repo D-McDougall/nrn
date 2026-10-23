@@ -487,6 +487,11 @@ def _call_at_top_level(target, args):
         _hoc_symlist.value = saved_symlist
 
 
+# call_func (field 1): HocCommand::func_call (ivoc/objcmd.cpp) calls it to
+# evaluate a Python callable as a function of numbers, for example the
+# callable given to RangeVarPlot.
+_METHODS_CALL_FUNC_OFFSET = 8
+
 # hoc_nrnpython (field 13, after hoccommand_exec_strret at 96): the builtin
 # nrnpython() calls it. Inside a template HOC resolves the builtin rather than
 # a top-level registration (ModelView's `nrnpython("import neuron")`).
