@@ -200,6 +200,52 @@ foreach(mpiexec "" "_mpiexec")
     COMMAND ${python} -c "from neuron import h$<SEMICOLON> h.quit()")
 endforeach()
 
+# The tests above use one rank, so they pass even if MPI is never started. These use two ranks
+# and check that every rank sees both, for each way a Python script can ask for MPI at import.
+set(mpi_init_python_2ranks
+    ${MPIEXEC_NAME}
+    ${MPIEXEC_NUMPROC_FLAG}
+    2
+    ${MPIEXEC_OVERSUBSCRIBE}
+    ${MPIEXEC_PREFLAGS}
+    ${preload_sanitizer_mpiexec}
+    ${NRN_DEFAULT_PYTHON_EXECUTABLE}
+    ${MPIEXEC_POSTFLAGS})
+set(mpi_init_check_2ranks
+    "from neuron import h$<SEMICOLON> n = h.ParallelContext().nhost()$<SEMICOLON> assert n == 2, n$<SEMICOLON> h.quit()"
+)
+nrn_add_test(
+  GROUP mpi_init
+  NAME python_mpiexec_2ranks_mpienv
+  PRELOAD_SANITIZER
+  REQUIRES python mpi
+  PROCESSORS 2
+  ENVIRONMENT NEURON_INIT_MPI=1
+  COMMAND ${mpi_init_python_2ranks} -c "${mpi_init_check_2ranks}")
+nrn_add_test(
+  GROUP mpi_init
+  NAME python_mpiexec_2ranks_options
+  PRELOAD_SANITIZER
+  REQUIRES python mpi
+  PROCESSORS 2
+  ENVIRONMENT NEURON_MODULE_OPTIONS=-mpi
+  COMMAND ${mpi_init_python_2ranks} -c "${mpi_init_check_2ranks}")
+if(NRN_ENABLE_MPI AND NRN_ENABLE_PYTHON)
+  nrn_find_python_module(MODULE mpi4py)
+  # nrn_find_python_module sets the upper-case name (MPI4PY_FOUND); mpi4py_FOUND is never set.
+  if(MPI4PY_FOUND)
+    # MPI started by mpi4py before NEURON is imported: NEURON joins it.
+    nrn_add_test(
+      GROUP mpi_init
+      NAME python_mpiexec_2ranks_mpi4py
+      PRELOAD_SANITIZER
+      REQUIRES python mpi
+      PROCESSORS 2
+      COMMAND ${mpi_init_python_2ranks} -c
+              "from mpi4py import MPI$<SEMICOLON> ${mpi_init_check_2ranks}")
+  endif()
+endif()
+
 # =============================================================================
 # Add pytest
 # =============================================================================
