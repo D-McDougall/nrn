@@ -428,6 +428,90 @@ def _register_call_func():
 _register_call_func()
 
 
+def _cxx_array_allocator():
+    """Return C++ ``operator new[]`` and ``operator delete[]``, or None.
+
+    SaveState releases its plugin buffer with ``delete[]`` (savstate.cpp), so
+    the store hook must allocate it with ``new[]``, not malloc. The names are
+    the Itanium C++ ABI ones (Linux, macOS); MSVC builds return None.
+    """
+    for lib in (libnrniv, ctypes.CDLL(None)):
+        try:
+            new_array = lib._Znam
+            delete_array = lib._ZdaPv
+        except AttributeError:
+            continue
+        new_array.argtypes = [ctypes.c_size_t]
+        new_array.restype = ctypes.c_void_p
+        delete_array.argtypes = [ctypes.c_void_p]
+        delete_array.restype = None
+        return new_array, delete_array
+    return None
+
+
+def install_savestate_hooks(store, restore):
+    """Let SaveState keep Python-side state such as rxd concentrations.
+
+    SaveState.save() calls nrnpy_store_savestate(&data, &size) and restore()
+    calls nrnpy_restore_savestate(size, data) when the saved state holds such
+    data (savstate.cpp). store() returns the bytes to keep; restore(data)
+    gets them back as a bytearray. Same contract as NEURON's own hooks
+    (nrnpy_store_savestate_ in nrnpy_hoc.cpp), which only exist where
+    libnrnpython is loaded. NEURON raises a HOC error when store or restore
+    fails; a callback cannot, so the error is stashed and raised when save()
+    or restore() returns (a failed store keeps no Python data).
+
+    Installed only when this interface provides PythonObject (Option B).
+    Returns True if the hooks were installed.
+    """
+    from . import api
+
+    if not api._cfunctype_methods_installed:
+        return False
+    try:
+        store_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_store_savestate")
+        restore_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_restore_savestate")
+    except ValueError:
+        return False
+    allocator = _cxx_array_allocator()
+    if allocator is None:
+        return False
+    new_array, delete_array = allocator
+
+    def _store(save_data, save_size):
+        try:
+            data = bytes(store())
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            data = b""
+        # Replace any earlier buffer, as NEURON's hook does.
+        if save_data[0]:
+            delete_array(save_data[0])
+            save_data[0] = None
+        save_size[0] = len(data)
+        if data:
+            buffer = new_array(len(data))
+            ctypes.memmove(buffer, data, len(data))
+            save_data[0] = buffer
+
+    def _restore(size, data):
+        try:
+            restore(bytearray(ctypes.string_at(data, size)))
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+
+    global _mn_store_savestate_cb, _mn_restore_savestate_cb
+    _mn_store_savestate_cb = ctypes.CFUNCTYPE(
+        None, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint64)
+    )(_store)
+    _mn_restore_savestate_cb = ctypes.CFUNCTYPE(None, ctypes.c_int64, ctypes.c_void_p)(
+        _restore
+    )
+    store_slot.value = ctypes.cast(_mn_store_savestate_cb, ctypes.c_void_p).value
+    restore_slot.value = ctypes.cast(_mn_restore_savestate_cb, ctypes.c_void_p).value
+    return True
+
+
 def _register_vector_apply_callable():
     """Vector.apply(python_callable): core calls nrnpy_call_func per element.
 

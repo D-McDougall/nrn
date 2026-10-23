@@ -1583,6 +1583,11 @@ try:
 except:
     print("Failed to setup _nrnpy_rvp_pyobj_callback")
 
+# SaveState calls hooks in libnrniv to keep Python-side state (rxd). The
+# registration above reaches them only where libnrnpython is loaded; the
+# interface installs them itself, so dynamic-Python builds keep that state too.
+_interface.install_savestate_hooks(_store_savestate, _restore_savestate)
+
 try:
     from neuron.psection import psection
 
