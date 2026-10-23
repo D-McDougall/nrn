@@ -1588,6 +1588,10 @@ except:
 # interface installs them itself, so dynamic-Python builds keep that state too.
 _interface.install_savestate_hooks(_store_savestate, _restore_savestate)
 
+# RangeVarPlot of an rxd species needs the species turned into a function of x.
+# NEURON's version of this hook is installed only with libnrnpython.
+_interface.install_rvp_rxd_hook(_nrnpy_rvp_pyobj_callback)
+
 try:
     from neuron.psection import psection
 

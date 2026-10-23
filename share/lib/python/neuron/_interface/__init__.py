@@ -512,6 +512,54 @@ def install_savestate_hooks(store, restore):
     return True
 
 
+def install_rvp_rxd_hook(to_callable):
+    """Let RangeVarPlot plot a Python object such as an rxd species.
+
+    RangeVarPlot(pyobj, ...) passes the object's PythonObject through
+    nrnpy_rvp_rxd_to_callable (spaceplt.cpp) and then evaluates the returned
+    PythonObject at each x through methods.call_func. to_callable(obj)
+    returns obj itself or a function of x
+    (neuron._nrnpy_rvp_pyobj_callback turns an rxd species into one).
+    NEURON's version is rvp_rxd_to_callable_ (nrnpy_hoc.cpp), which only
+    libnrnpython's registration installs. A failure is stashed and raised when
+    the HOC call returns; RangeVarPlot then keeps the original object.
+
+    Installed only when this interface provides PythonObject (Option B).
+    Returns True if the hook was installed.
+    """
+    from . import api
+
+    if not api._cfunctype_methods_installed:
+        return False
+    try:
+        slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_rvp_rxd_to_callable")
+    except ValueError:
+        return False
+
+    def _to_callable(pycall):
+        try:
+            if not pycall or _nrn_class_name(pycall) != b"PythonObject":
+                return pycall  # HocCommand reports a non-PythonObject itself
+            obj = _unwrap_pythonobject(pycall)
+            result = to_callable(obj)
+            if result is obj:
+                return pycall
+            # Refcount 0: the HocCommand that receives it takes the only
+            # reference and releases it with the RangeVarPlot.
+            converted = _py_pyobj_to_hoc_cfunctype(result, take_ref=False)
+            return converted or pycall
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return pycall
+
+    global _mn_rvp_rxd_to_callable_cb
+    _mn_rvp_rxd_to_callable_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        _to_callable
+    )
+    slot.value = ctypes.cast(_mn_rvp_rxd_to_callable_cb, ctypes.c_void_p).value
+    return True
+
+
 def _register_vector_apply_callable():
     """Vector.apply(python_callable): core calls nrnpy_call_func per element.
 
