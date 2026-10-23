@@ -1577,7 +1577,9 @@ def _object_ptr_push(obj_ref):
 # Real NEURON converts a Python callable to a HOC `Object*` of class
 # "PythonObject" via `nrnpy_po2ho` (src/nrnpython/nrnpy_hoc.cpp:598), which
 # lives in libnrnpython.cpython-3.X.so (mangled symbol
-# `_Z11nrnpy_po2hoP7_object`), not libnrniv. It is safe to call only after
+# `_Z11nrnpy_po2hoP7_object`), not libnrniv, when Python is dynamically
+# loaded. Without NRN_ENABLE_PYTHON_DYNAMIC, nrnpython is linked into libnrniv
+# and libnrniv exports nrnpy_po2ho itself. It is safe to call only after
 # `nrnpython_reg_real` has run inside libnrnpython: that registration
 # installs the "PythonObject" template and fills `neuron::python::methods`
 # so `hoccommand_exec` can call back into the wrapped callable. `import
@@ -1586,6 +1588,9 @@ def _object_ptr_push(obj_ref):
 # default CFUNCTYPE provider wraps values itself (_py_pyobj_to_hoc_cfunctype).
 # It is the fallback when that provider is not installed. If libnrnpython or
 # the symbol cannot be found, this returns None and callers raise TypeError.
+# Under `nrniv -python` / `special -python` the native nrnpython has already
+# filled the methods table, so the CFUNCTYPE provider stands aside and this
+# fallback is the only provider.
 
 _pyobj_to_hoc_object = None  # populated lazily by _ensure_pyobj_to_hoc()
 
@@ -1593,17 +1598,16 @@ _pyobj_to_hoc_object = None  # populated lazily by _ensure_pyobj_to_hoc()
 def _ensure_pyobj_to_hoc():
     """Return a ctypes-bound ``nrnpy_po2ho(PyObject*) -> Object*`` or None.
 
-    Returns None if libnrnpython can't be located or loaded.
+    Returns None if neither libnrniv nor libnrnpython exports nrnpy_po2ho.
 
     Side effect: if nrnpy_pyobj_sym_ is unset, sets it to the stub PythonObject
     symbol (needed when -nopython ran without loading libnrnpython).
     """
     global _pyobj_to_hoc_object
-    # TODO(gap-60): discover the native allocator in static Python extensions.
     if _pyobj_to_hoc_object is not None:
         return _pyobj_to_hoc_object
 
-    # Search next to libnrniv first (covers the neuron wheel layout).
+    # Search next to libnrniv (covers the neuron wheel layout).
     lib_dir = os.path.dirname(libnrniv._name or "")
     patterns = [
         os.path.join(lib_dir, "libnrnpython*.so"),
@@ -1615,14 +1619,19 @@ def _ensure_pyobj_to_hoc():
         if matches:
             candidate = matches[0]
             break
-    if candidate is None:
+    sym_name = "_Z11nrnpy_po2hoP7_object"  # nrnpy_po2ho(PyObject*)
+    if hasattr(libnrniv, sym_name):
+        # Non-dynamic build: nrnpython is part of libnrniv.
+        lib = libnrniv
+    elif candidate is None:
         return None
-    try:
-        # RTLD_GLOBAL so libnrnpython sees libnrniv's already-loaded
-        # symbols (hoc_obj_ref, nrnpy_pyobj_sym_, etc.) without re-dlopen.
-        lib = ctypes.PyDLL(candidate, mode=ctypes.RTLD_GLOBAL)
-    except OSError:
-        return None
+    else:
+        try:
+            # RTLD_GLOBAL so libnrnpython sees libnrniv's already-loaded
+            # symbols (hoc_obj_ref, nrnpy_pyobj_sym_, etc.) without re-dlopen.
+            lib = ctypes.PyDLL(candidate, mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            return None
 
     # Under -nopython the stub PythonObject is registered but
     # nrnpy_pyobj_sym_ (normally set by nrnpython_reg_real) stays unset.
@@ -1645,7 +1654,6 @@ def _ensure_pyobj_to_hoc():
         if sym:
             pyobj_sym.value = sym
 
-    sym_name = "_Z11nrnpy_po2hoP7_object"  # nrnpy_po2ho(PyObject*)
     try:
         fn = getattr(lib, sym_name)
     except AttributeError:
