@@ -838,46 +838,6 @@ def _install_cfunctype_methods():
     _pysame_slot = ctypes.c_void_p.from_address(_methods_addr + _METHODS_PYSAME_OFFSET)
     _pysame_slot.value = ctypes.cast(_py_pysame, ctypes.c_void_p).value
 
-    # Public neuronapi stack kinds. On dev114 and dev115, querying the kind of a
-    # dimension marker throws. Consume known markers with nrn_int_pop, never stack_type.
-    _STACK_IS_STR = 1
-    _STACK_IS_VAR = 2
-    _STACK_IS_NUM = 3
-    _STACK_IS_OBJVAR = 4
-    _STACK_IS_OBJTMP = 5
-    _STACK_IS_INT = 6
-
-    def _pop_hoc_python_value(*, discard=False, on_pop):
-        stack_type = _nrn_stack_type()
-        if stack_type == _STACK_IS_STR:
-            value = _nrn_str_pop0()
-        elif stack_type == _STACK_IS_VAR:
-            value = _nrn_double_ptr_pop()
-        elif stack_type == _STACK_IS_NUM:
-            value = _nrn_double_pop()
-        elif stack_type in (_STACK_IS_OBJVAR, _STACK_IS_OBJTMP):
-            value = _object_pop_safe()
-        elif stack_type == _STACK_IS_INT:
-            value = _nrn_int_pop()
-        else:
-            raise TypeError(f"unsupported HOC argument stack type {stack_type}")
-        # Advance frame accounting only after a pop succeeds, but BEFORE
-        # converting an owned object or dereferencing a possibly null pointer.
-        on_pop()
-        if stack_type == _STACK_IS_STR:
-            return None if discard else _decode_hoc_string(value)
-        if stack_type == _STACK_IS_VAR:
-            if not value:
-                raise ReferenceError("HOC argument points to invalid storage")
-            return float(value[0])
-        if stack_type in (_STACK_IS_OBJVAR, _STACK_IS_OBJTMP):
-            if discard:
-                if value:
-                    _nrn_object_unref(value)
-                return None
-            return _owned_hoc_object_to_python(value)
-        return value
-
     def _push_py2n_result(result):
         """Push exactly one Python result using py2n_component semantics."""
         from .object import Object as _Object
@@ -1185,6 +1145,48 @@ def _install_cfunctype_methods():
     # Component reentry currently mirrors
     # HocTopContextManager via its exported globals; a public context boundary
     # in NEURON is still the version-safe long-term fix.
+
+
+# Public neuronapi stack kinds. On dev114 and dev115, querying the kind of a
+# dimension marker throws. Consume known markers with nrn_int_pop, never stack_type.
+_STACK_IS_STR = 1
+_STACK_IS_VAR = 2
+_STACK_IS_NUM = 3
+_STACK_IS_OBJVAR = 4
+_STACK_IS_OBJTMP = 5
+_STACK_IS_INT = 6
+
+
+def _pop_hoc_python_value(*, discard=False, on_pop):
+    stack_type = _nrn_stack_type()
+    if stack_type == _STACK_IS_STR:
+        value = _nrn_str_pop0()
+    elif stack_type == _STACK_IS_VAR:
+        value = _nrn_double_ptr_pop()
+    elif stack_type == _STACK_IS_NUM:
+        value = _nrn_double_pop()
+    elif stack_type in (_STACK_IS_OBJVAR, _STACK_IS_OBJTMP):
+        value = _object_pop_safe()
+    elif stack_type == _STACK_IS_INT:
+        value = _nrn_int_pop()
+    else:
+        raise TypeError(f"unsupported HOC argument stack type {stack_type}")
+    # Advance frame accounting only after a pop succeeds, but BEFORE
+    # converting an owned object or dereferencing a possibly null pointer.
+    on_pop()
+    if stack_type == _STACK_IS_STR:
+        return None if discard else _decode_hoc_string(value)
+    if stack_type == _STACK_IS_VAR:
+        if not value:
+            raise ReferenceError("HOC argument points to invalid storage")
+        return float(value[0])
+    if stack_type in (_STACK_IS_OBJVAR, _STACK_IS_OBJTMP):
+        if discard:
+            if value:
+                _nrn_object_unref(value)
+            return None
+        return _owned_hoc_object_to_python(value)
+    return value
 
 
 def _pop_looked_at_object():
