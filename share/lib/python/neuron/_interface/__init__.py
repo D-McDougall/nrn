@@ -61,6 +61,8 @@ from .api import (
     _nrn_object_ref,
     _pythonobject_payload_ptr,
     _py_pyobj_to_hoc_cfunctype,
+    _native_methods_slot,
+    _METHODS_PO2HO_OFFSET,
     libnrniv,
 )
 from .nrnref import (
@@ -307,32 +309,348 @@ def _hoc_arg_to_python(i):
     return _nrn_getarg(i)[0]
 
 
-def _register_mpi_alltoall_type():
-    """ParallelContext's py_alltoall family, for a single process.
+class _MpiCollectives:
+    """ParallelContext's py_* collectives across more than one MPI rank.
 
-    Core asserts methods.mpi_alltoall_type is set (ocbbs.cpp). With one rank
-    NEURON's implementation (nrnpy_p2h.cpp py_alltoall_type) only repackages
-    its argument; this does the same. myneuron does not run multi-rank MPI.
-    type: 1 alltoall, 2 allgather, 3 gather, 4 broadcast, 5 scatter.
+    A port of the multi-rank half of py_alltoall_type and its helpers in
+    src/nrnpython/nrnpy_p2h.cpp. Every Python object is sent as its pickle
+    (``pickle.dumps``), the same bytes master sends, through libnrniv's own
+    MPI wrappers (``nrnmpi_*``, declared in src/nrnmpi/nrnmpidec.h).
+
+    Why libnrniv's wrappers and not mpi4py: they use NEURON's communicator
+    for the current subworld (ParallelContext.subworlds), and they also work
+    when mpi4py is not installed. They are ``extern "C"``, so ctypes finds
+    them by their plain names on every platform. In dynamic-MPI builds
+    libnrniv exports forwarding functions with the same names
+    (src/nrnmpi/mkdynam.sh).
+
+    Each collective takes one item, or a list with one item per rank, and
+    returns what master returns. A rank whose item is ``None`` sends no
+    bytes, and the receiver gets ``None`` back (char2pylist in master).
+
+    The bindings are made on first use, which is only ever after MPI has
+    started with more than one rank, so builds without MPI never look up
+    these symbols.
     """
+
+    def __init__(self):
+        import pickle
+
+        self._dumps = pickle.dumps
+        self._loads = pickle.loads
+        c_int_p = ctypes.POINTER(ctypes.c_int)
+        c_char_p = ctypes.POINTER(ctypes.c_char)
+        c_int = ctypes.c_int
+
+        def bind(name, *argtypes):
+            function = getattr(libnrniv, name)
+            function.argtypes = list(argtypes)
+            function.restype = None
+            return function
+
+        # Signatures copied from src/nrnmpi/nrnmpidec.h.
+        self._int_allgather_inplace = bind(
+            "nrnmpi_int_allgather_inplace", c_int_p, c_int
+        )
+        self._char_allgatherv = bind(
+            "nrnmpi_char_allgatherv", c_char_p, c_char_p, c_int_p, c_int_p
+        )
+        self._int_gather = bind("nrnmpi_int_gather", c_int_p, c_int_p, c_int, c_int)
+        self._char_gatherv = bind(
+            "nrnmpi_char_gatherv", c_char_p, c_int, c_char_p, c_int_p, c_int_p, c_int
+        )
+        self._int_broadcast = bind("nrnmpi_int_broadcast", c_int_p, c_int, c_int)
+        self._char_broadcast = bind("nrnmpi_char_broadcast", c_char_p, c_int, c_int)
+        self._int_alltoallv = bind(
+            "nrnmpi_int_alltoallv", c_int_p, c_int_p, c_int_p, c_int_p, c_int_p, c_int_p
+        )
+        self._char_alltoallv = bind(
+            "nrnmpi_char_alltoallv",
+            c_char_p,
+            c_int_p,
+            c_int_p,
+            c_char_p,
+            c_int_p,
+            c_int_p,
+        )
+        self._int_scatter = bind("nrnmpi_int_scatter", c_int_p, c_int_p, c_int, c_int)
+        self._char_scatterv = bind(
+            "nrnmpi_char_scatterv", c_char_p, c_int_p, c_int_p, c_char_p, c_int, c_int
+        )
+
+    # --- small helpers -------------------------------------------------
+
+    @staticmethod
+    def _ints(values):
+        """A C int array holding *values*."""
+        return (ctypes.c_int * len(values))(*values)
+
+    @staticmethod
+    def _displacements(counts):
+        """Start offset of each rank's bytes, plus the total at the end.
+
+        mk_displ in master: [0, c0, c0+c1, ...], one longer than counts.
+        """
+        displ = [0]
+        for count in counts:
+            displ.append(displ[-1] + count)
+        return displ
+
+    @staticmethod
+    def _bytes_buffer(data):
+        """A writable C char buffer holding *data*, at least 1 byte long.
+
+        MPI may be handed a zero-length buffer, but ctypes cannot make a
+        zero-length array, so an empty message gets a 1-byte buffer.
+        """
+        buf = ctypes.create_string_buffer(max(len(data), 1))
+        ctypes.memmove(buf, data, len(data))
+        return buf
+
+    def _unpickle_list(self, raw, counts, displ):
+        """Split received bytes per rank and unpickle; 0 bytes means None."""
+        return [
+            self._loads(raw[displ[i] : displ[i] + count]) if count else None
+            for i, count in enumerate(counts)
+        ]
+
+    # --- the five collectives (types 1 to 5 in ocbbs.cpp) --------------
+
+    def alltoall(self, items, size, nhost):
+        """py_alltoall: rank i gets items[i] from every rank, as a list.
+
+        With size < 0 nothing is exchanged except byte counts, and the
+        result is (bytes this rank would send, bytes it would receive), as
+        in master. That lets a model check message sizes before sending.
+        """
+        pickles = [b"" if item is None else self._dumps(item) for item in items]
+        send_counts = [len(p) for p in pickles]
+
+        # First every rank tells every other rank how many bytes to expect.
+        ones = self._ints([1] * nhost)
+        one_displ = self._ints(self._displacements([1] * nhost))
+        scnt = self._ints(send_counts)
+        rcnt = self._ints([0] * nhost)
+        self._int_alltoallv(scnt, ones, one_displ, rcnt, ones, one_displ)
+        recv_counts = list(rcnt)
+
+        sdispl = self._displacements(send_counts)
+        rdispl = self._displacements(recv_counts)
+        if size < 0:
+            return (sdispl[-1], rdispl[-1])
+
+        # Then the bytes themselves.
+        sbuf = self._bytes_buffer(b"".join(pickles))
+        rbuf = ctypes.create_string_buffer(rdispl[-1] + 1)
+        self._char_alltoallv(
+            sbuf, scnt, self._ints(sdispl), rbuf, rcnt, self._ints(rdispl)
+        )
+        return self._unpickle_list(rbuf.raw, recv_counts, rdispl)
+
+    def allgather(self, item, myid, nhost):
+        """py_allgather: every rank gets [item from rank 0, rank 1, ...]."""
+        data = self._dumps(item)
+        counts = [0] * nhost
+        counts[myid] = len(data)
+        rcnt = self._ints(counts)
+        # Fills in every rank's byte count in place.
+        self._int_allgather_inplace(rcnt, 1)
+        counts = list(rcnt)
+        displ = self._displacements(counts)
+        rbuf = ctypes.create_string_buffer(displ[-1] + 1)
+        self._char_allgatherv(self._bytes_buffer(data), rbuf, rcnt, self._ints(displ))
+        return self._unpickle_list(rbuf.raw, counts, displ)
+
+    def gather(self, item, root, myid, nhost):
+        """py_gather: root gets [item from each rank]; other ranks get None."""
+        data = self._dumps(item)
+        is_root = myid == root
+        # Receive arguments only matter on root (MPI ignores them elsewhere).
+        rcnt = self._ints([0] * nhost)
+        self._int_gather(self._ints([len(data)]), rcnt, 1, root)
+        counts = list(rcnt) if is_root else [0] * nhost
+        displ = self._displacements(counts)
+        rbuf = ctypes.create_string_buffer(displ[-1] + 1)
+        self._char_gatherv(
+            self._bytes_buffer(data), len(data), rbuf, rcnt, self._ints(displ), root
+        )
+        return self._unpickle_list(rbuf.raw, counts, displ) if is_root else None
+
+    def broadcast(self, item, root, myid):
+        """py_broadcast: every rank gets root's item.
+
+        Root gets its own object back, not a copy, as in master.
+        """
+        is_root = myid == root
+        data = self._dumps(item) if is_root else b""
+        cnt = self._ints([len(data)])
+        self._int_broadcast(cnt, 1, root)
+        buf = self._bytes_buffer(data) if is_root else ctypes.create_string_buffer(
+            cnt[0] + 1
+        )
+        self._char_broadcast(buf, cnt[0], root)
+        return item if is_root else self._loads(buf.raw[: cnt[0]])
+
+    def scatter(self, items, root, myid, nhost):
+        """py_scatter: rank i gets items[i] from root (None stays None).
+
+        Only root's argument is used; other ranks may pass anything.
+        """
+        is_root = myid == root
+        if is_root:
+            pickles = [b"" if item is None else self._dumps(item) for item in items]
+        else:
+            pickles = [b""] * nhost
+        send_counts = [len(p) for p in pickles]
+        scnt = self._ints(send_counts)
+        rcnt = self._ints([0])
+        self._int_scatter(scnt, rcnt, 1, root)
+        sbuf = self._bytes_buffer(b"".join(pickles))
+        rbuf = ctypes.create_string_buffer(rcnt[0] + 1)
+        self._char_scatterv(
+            sbuf,
+            scnt,
+            self._ints(self._displacements(send_counts)),
+            rbuf,
+            rcnt[0],
+            root,
+        )
+        return self._loads(rbuf.raw[: rcnt[0]]) if rcnt[0] else None
+
+
+_mpi_collectives = None  # made on first multi-rank call, see _MpiCollectives
+
+
+def _mpi_rank_and_size():
+    """(rank, number of ranks) in the current MPI subworld.
+
+    These are the globals master's py_alltoall_type reads (src/oc/nrnmpi.h).
+    They are plain C++ globals, which GCC, Clang and MinGW export without
+    name mangling. Without MPI they stay 0 and 1.
+    """
+    try:
+        myid = ctypes.c_int.in_dll(libnrniv, "nrnmpi_myid").value
+        nhost = ctypes.c_int.in_dll(libnrniv, "nrnmpi_numprocs").value
+    except ValueError:
+        # Not exported by this libnrniv: it cannot be running MPI either.
+        return 0, 1
+    return myid, nhost
+
+
+def _new_temp_python_object(value):
+    """A new HOC PythonObject holding *value*, at refcount 0.
+
+    For a methods-table hook whose C++ caller takes ownership by passing the
+    result to hoc_temp_objptr, as py_alltoall_type in ocbbs.cpp does.
+    """
+    obj = _py_pyobj_to_hoc_cfunctype(value, take_ref=False)
+    if obj is not None:
+        return obj
+    # None means libnrnpython provides PythonObject (under `nrniv -python`),
+    # and only its nrnpy_po2ho can make one. libnrnpython stores that function
+    # in the po2ho slot of the methods table, so it is called through the slot
+    # rather than looked up by its C++ name. PYFUNCTYPE keeps the GIL held, as
+    # nrnpy_po2ho uses the Python C API.
+    #
+    # nrnpy_po2ho returns the new PythonObject at refcount 1, but this hook
+    # must return it at 0, like the Option B path above. HOC takes its own
+    # reference when it pushes the result (hoc_push_object), and the Python
+    # caller ends up holding exactly that one. So drop the count to 0, as
+    # NEURON's own py_alltoall_type does (--ho->refcount in nrnpy_p2h.cpp).
+    # Left at 1, the object would never be freed; nrn_object_unref would free
+    # it at once. refcount is the first field of struct Object
+    # (src/oc/hocdec.h). nrnpy_po2ho turns None into a nil HOC object (NULL),
+    # which the caller hands back to Python as None.
+    if value is None:
+        return None
+    po2ho_addr = _native_methods_slot(_METHODS_PO2HO_OFFSET)
+    if not po2ho_addr:
+        raise TypeError(f"cannot return Python {type(value).__name__} to HOC")
+    po2ho = ctypes.PYFUNCTYPE(ctypes.c_void_p, ctypes.py_object)(po2ho_addr)
+    obj = po2ho(value)
+    if not obj:
+        raise TypeError(f"cannot return Python {type(value).__name__} to HOC")
+    ctypes.c_int.from_address(obj).value -= 1
+    return obj
+
+
+def _register_mpi_alltoall_type():
+    """ParallelContext's py_alltoall family: py_alltoall, py_allgather,
+    py_gather, py_broadcast and py_scatter.
+
+    Core asserts methods.mpi_alltoall_type is set (ocbbs.cpp) and calls it
+    as mpi_alltoall_type(size, type), with the Python argument as HOC
+    argument 1. type: 1 alltoall, 2 allgather, 3 gather, 4 broadcast,
+    5 scatter. For gather, broadcast and scatter, size is the root rank.
+    For alltoall, size < 0 asks only for the byte counts.
+
+    With one rank NEURON's implementation (nrnpy_p2h.cpp py_alltoall_type)
+    only repackages its argument; the first branch below does the same.
+    With more ranks, _MpiCollectives does the exchange.
+    """
+
+    def _single_rank(size, type_):
+        if type_ in (1, 5):
+            source = _hoc_arg_to_python(1)
+            if not isinstance(source, list):
+                raise TypeError("Argument must be a Python list")
+            if len(source) != 1:
+                which = "py_alltoall" if type_ == 1 else "py_scatter"
+                raise ValueError(f"{which} list size must be nhost")
+            if type_ == 1:
+                return _nrn_objgetarg(1)[0]  # the argument itself, as NEURON
+            result = source[0]
+        else:
+            value = _hoc_arg_to_python(1)
+            result = value if type_ == 4 else [value]
+        return _new_temp_python_object(result)
+
+    def _multi_rank(size, type_, myid, nhost):
+        global _mpi_collectives
+        if _mpi_collectives is None:
+            _mpi_collectives = _MpiCollectives()
+        mpi = _mpi_collectives
+        if type_ in (1, 5):
+            # alltoall: every rank passes a list of nhost items.
+            # scatter: only the root (size) has to.
+            items = None
+            if type_ == 1 or myid == size:
+                items = _hoc_arg_to_python(1)
+                if not isinstance(items, list):
+                    raise TypeError("Argument must be a Python list")
+                if len(items) != nhost:
+                    which = "py_alltoall" if type_ == 1 else "py_scatter"
+                    raise ValueError(f"{which} list size must be nhost")
+            if type_ == 1:
+                result = mpi.alltoall(items, size, nhost)
+            else:
+                result = mpi.scatter(items, size, myid, nhost)
+        else:
+            item = _hoc_arg_to_python(1)
+            if type_ == 2:
+                result = mpi.allgather(item, myid, nhost)
+            else:
+                # Same check and message as master. An out-of-range root
+                # would otherwise abort the whole MPI job.
+                root = size
+                if root < 0 or root >= nhost:
+                    raise ValueError("root rank must be >= 0 and < nhost")
+                if type_ == 3:
+                    result = mpi.gather(item, root, myid, nhost)
+                else:
+                    result = mpi.broadcast(item, root, myid)
+        return _new_temp_python_object(result)
 
     def _alltoall_type(size, type_):
         try:
-            if type_ in (1, 5):
-                source = _hoc_arg_to_python(1)
-                if not isinstance(source, list):
-                    raise TypeError("Argument must be a Python list")
-                if len(source) != 1:
-                    which = "py_alltoall" if type_ == 1 else "py_scatter"
-                    raise ValueError(f"{which} list size must be nhost")
-                if type_ == 1:
-                    return _nrn_objgetarg(1)[0]  # the argument itself, as NEURON
-                result = source[0]
-            else:
-                value = _hoc_arg_to_python(1)
-                result = value if type_ == 4 else [value]
-            return _py_pyobj_to_hoc_cfunctype(result, take_ref=False)
+            myid, nhost = _mpi_rank_and_size()
+            if nhost == 1:
+                return _single_rank(size, type_)
+            return _multi_rank(size, type_, myid, nhost)
         except BaseException as exc:
+            # Reported to the Python caller when the HOC call returns. Note
+            # that a rank which fails before the exchange leaves the other
+            # ranks waiting in it, exactly as an hoc_execerror did in master.
             _stash_callback_exc(exc)
             return None
 
@@ -340,7 +658,16 @@ def _register_mpi_alltoall_type():
     _mn_alltoall_type_cb = ctypes.CFUNCTYPE(
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int
     )(_alltoall_type)
-    _install_methods_slot(_METHODS_MPI_ALLTOALL_TYPE_OFFSET, _mn_alltoall_type_cb)
+    # Installed even over libnrnpython's own py_alltoall_type (nrnpy_p2h.cpp),
+    # which fills this slot under `nrniv -python`. For allgather, gather and
+    # broadcast that C++ function reads the Python argument from curargs_,
+    # which only the C++ hoc module's hocobj_call sets. A call made through
+    # this interface goes through nrn_method_call instead, so curargs_ is NULL
+    # and the C++ function crashes. _alltoall_type reads its argument from the
+    # HOC stack, so it works whichever way the method was called.
+    _install_methods_slot(
+        _METHODS_MPI_ALLTOALL_TYPE_OFFSET, _mn_alltoall_type_cb, replace_native=True
+    )
 
 
 _register_mpi_alltoall_type()
