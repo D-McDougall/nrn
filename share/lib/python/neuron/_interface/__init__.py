@@ -82,6 +82,7 @@ from .utils import (
     FuncWrapper,
     _is_python_object_arg,
     check_ascii_name,
+    getattribute_then_getattr,
     _PythonObjectArg,
     _Singleton,
     _wrap_owned_object,
@@ -1725,6 +1726,9 @@ class NEURON(metaclass=_Singleton):
             self._top_level = list_functions()
 
         raise AttributeError(f"'NEURON' object has no attribute '{name}'")
+
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    del __getattr__  # see getattribute_then_getattr
 
     def __setattr__(self, name, value):
         check_ascii_name(name)

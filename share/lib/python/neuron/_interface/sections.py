@@ -50,6 +50,7 @@ from .utils import (
     _try_wrap_density_nmodlrandom,
     list_functions,
     check_ascii_name,
+    getattribute_then_getattr,
     list_methods,
 )
 
@@ -686,6 +687,9 @@ class Segment:
                 return wrapped
         raise AttributeError(f"'{name}' is not a range variable on {self!r}.")
 
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    del __getattr__  # see getattribute_then_getattr
+
     def __iter__(self):
         """Iterate over Mechanism objects for each inserted mechanism."""
         from .mechanism import Mechanism
@@ -1109,6 +1113,9 @@ class Section:
             raise AttributeError(name) from None
         self._check_alive()
         return getattr(self(0.5), name)
+
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    del __getattr__  # see getattribute_then_getattr
 
     def __iter__(self):
         self._check_alive()
@@ -1812,6 +1819,9 @@ class CachedSegment:
         if ptr is not None:
             return ptr[0]
         return getattr(self._seg, name)
+
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    del __getattr__  # see getattribute_then_getattr
 
     def __setattr__(self, name, value):
         if name in CachedSegment.__slots__:

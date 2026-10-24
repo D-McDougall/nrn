@@ -23,6 +23,7 @@ from .utils import (
     _try_wrap_density_nmodlrandom,
     list_functions,
     check_ascii_name,
+    getattribute_then_getattr,
 )
 
 # Mechanisms that are always present and should be skipped during iteration
@@ -453,6 +454,9 @@ class Mechanism:
                     return wrapped
 
         raise AttributeError(f"'{self._name}' mechanism has no variable '{name}'")
+
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    del __getattr__  # see getattribute_then_getattr
 
     def _func_names(self):
         """Return list of NMODL PROCEDURE/FUNCTION names exposed by this mech."""

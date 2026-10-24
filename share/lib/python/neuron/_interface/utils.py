@@ -38,6 +38,32 @@ def check_ascii_name(name):
         raise TypeError(f"attribute name must contain only ascii characters: {name!r}")
 
 
+def getattribute_then_getattr(getattr_):
+    """Return a ``__getattribute__`` that looks a name up in Python, then in NEURON.
+
+    ``getattr_(self, name)`` is a class's lookup of NEURON names (range
+    variables, mechanisms, HOC members). It raises AttributeError for a name
+    NEURON does not have. A class assigns the returned function as its
+    ``__getattribute__`` and then deletes its ``__getattr__``, so that
+    ``x.name``, ``getattr(x, name)`` and an explicit
+    ``x.__getattribute__(name)`` all run the same lookup, once. (With
+    ``__getattr__`` still defined, Python would repeat the NEURON lookup after
+    every miss.)
+
+    A Python subclass may define its own ``__getattr__``. Python calls it
+    when this lookup fails, and this lookup never calls it, so a subclass
+    ``__getattr__`` may itself call ``self.__getattribute__(name)``.
+    """
+
+    def __getattribute__(self, name):
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            return getattr_(self, name)
+
+    return __getattribute__
+
+
 class FuncWrapper:
     # __doc__ is a property backed by the _doc slot (a class variable and a
     # same-named slot would clash). Lookup is deferred to avoid help I/O

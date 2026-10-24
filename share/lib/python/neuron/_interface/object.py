@@ -63,6 +63,7 @@ from .utils import (
     _object_pop,
     _try_wrap_point_nmodlrandom,
     class_symbol,
+    getattribute_then_getattr,
     is_located_point_process_class,
     is_point_process_class,
     list_functions,
@@ -459,10 +460,10 @@ class Object(metaclass=_HocClassMeta):
         `hocobj_getattr(self, name)` (nrnpy_hoc.cpp:1410-1416). It bypasses
         a Python subclass that shadows a HOC attribute with a property,
         descriptor or instance `__dict__` entry. HOC dispatch lives in
-        `Object.__getattr__`, which Python only calls when normal lookup
-        misses, so this calls it directly. It uses `Object.__getattr__`, not
-        `type(self).__getattr__`, so subclasses can override `__getattr__`
-        for non-HOC reasons.
+        `Object._hoc_getattr`, which `__getattribute__` only calls when
+        normal lookup misses, so this calls it directly. It uses
+        `Object._hoc_getattr`, not a lookup on `type(self)`, so subclasses
+        can override `__getattr__` for non-HOC reasons.
 
         The lookup goes through a second wrapper of the same HOC object, so a
         method kept on the instance (``self.bp = self.baseattr("p")``) does not
@@ -473,7 +474,7 @@ class Object(metaclass=_HocClassMeta):
         from .utils import _wrap_owned_object
 
         _nrn_object_ref(self._obj)
-        return Object.__getattr__(_wrap_owned_object(self._obj), name)
+        return Object._hoc_getattr(_wrap_owned_object(self._obj), name)
 
     def __repr__(self):
         return self.hname()
@@ -538,7 +539,7 @@ class Object(metaclass=_HocClassMeta):
         class's own HOC ``ref`` method where it has one (``VBox.ref(obj)``)."""
         methods = getattr(self, "_methods", None)
         if methods is not None and "ref" in methods:
-            return self.__getattr__("ref")(*args, **kwargs)
+            return self._hoc_getattr("ref")(*args, **kwargs)
         return self._property_ref(*args, **kwargs)
 
     def _property_ref(self, name, idx=None):
@@ -647,7 +648,7 @@ class Object(metaclass=_HocClassMeta):
         """
         from . import NEURON
 
-        x = self.__getattr__(loc_method)()
+        x = self._hoc_getattr(loc_method)()
         if x == -1:  # no source/target section; nothing was pushed
             return None
         n = NEURON()
@@ -1074,6 +1075,10 @@ class Object(metaclass=_HocClassMeta):
             except AttributeError:
                 pass
         raise AttributeError(f"'{self._class_name}' object has no attribute '{name}'")
+
+    __getattribute__ = getattribute_then_getattr(__getattr__)
+    _hoc_getattr = __getattr__
+    del __getattr__  # see getattribute_then_getattr
 
 
 # User HOC-template numeric members, public or not, as NEURON's Python module
