@@ -379,7 +379,12 @@ void HocDataPathImpl::search_pysec() {
     // ForAllSections(sec)
     ITERATE(qsec, section_list) {
         Section* sec = hocSEC(qsec);
-        if (sec->prop && sec->prop->dparam[PROP_PY_INDEX].get<void*>()) {
+        // Python sections, and any other section outside a HOC cell that the
+        // symbol search above did not reach (the ctypes interface's sections
+        // are in no symbol table). Values found already are not sentinels
+        // any more, so searching a section twice finds nothing new.
+        if (sec->prop && (sec->prop->dparam[PROP_PY_INDEX].get<void*>() ||
+                          !sec->prop->dparam[6].get<Object*>())) {
             cs = secname(sec);
             strlist_.push_back(cs);
             search(sec);
