@@ -501,6 +501,10 @@ _METHODS_HOC_NRNPYTHON_OFFSET = 104
 # py_gather, py_broadcast and py_scatter call it and assert it is set.
 _METHODS_MPI_ALLTOALL_TYPE_OFFSET = 144
 
+# opaque_obj2pyobj (field 20): BBSaveState keys Python cells by the PyObject*
+# inside their PythonObject (nrn_opaque_obj2pyobj, hoc_oop.cpp).
+_METHODS_OPAQUE_OBJ2PYOBJ_OFFSET = 160
+
 # praxis_efun (field 24): h.fit_praxis(python_callable, vec) asserts it is set.
 _METHODS_PRAXIS_EFUN_OFFSET = 192
 

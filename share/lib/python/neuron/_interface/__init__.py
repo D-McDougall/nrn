@@ -15,6 +15,7 @@ from .api import (
     _METHODS_CALL_FUNC_OFFSET,
     _METHODS_HOC_NRNPYTHON_OFFSET,
     _METHODS_MPI_ALLTOALL_TYPE_OFFSET,
+    _METHODS_OPAQUE_OBJ2PYOBJ_OFFSET,
     _METHODS_PRAXIS_EFUN_OFFSET,
     _MIN_VALID_DATAPTR,
     TYPES,
@@ -57,6 +58,7 @@ from .api import (
     _nrn_class_name,
     _unwrap_pythonobject,
     _nrn_object_ref,
+    _pythonobject_payload_ptr,
     _py_pyobj_to_hoc_cfunctype,
     libnrniv,
 )
@@ -557,6 +559,79 @@ def install_rvp_rxd_hook(to_callable):
         _to_callable
     )
     slot.value = ctypes.cast(_mn_rvp_rxd_to_callable_cb, ctypes.c_void_p).value
+    return True
+
+
+def install_pysec_cell_hooks():
+    """Let NEURON find the cell of a Python section, h.Section(cell=obj).
+
+    pc.gid2cell, BBSaveState and NetCon.precell ask libnrniv's
+    nrn_sec2cell (cabcode.cpp), which calls nrnpy_pysec_cell_p_ for a
+    section that HOC did not create. It returns the cell as an Object* with
+    one reference, which nrn_sec2cell gives up. nrnpy_pysec_cell_equals_p_
+    asks whether an Object* is that cell. NEURON's versions (pysec_cell in
+    nrnpy_nrn.cpp) read the cell from libnrnpython's own section objects,
+    which this interface does not create, so it installs its own. It also
+    fills methods.opaque_obj2pyobj, which BBSaveState uses to tell Python
+    cells apart, when no native provider has.
+    Returns True if the hooks were installed.
+    """
+    from .sections import PYTHON_SECTIONS
+    from .utils import _new_python_object
+
+    try:
+        cell_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_pysec_cell_p_")
+        equals_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_pysec_cell_equals_p_")
+    except ValueError:
+        return False
+
+    def _cell_of(sec_ptr):
+        sec = PYTHON_SECTIONS.get(sec_ptr)
+        return None if sec is None else sec.cell()
+
+    def _pysec_cell(sec_ptr):
+        try:
+            cell = _cell_of(sec_ptr)
+            if cell is None:
+                return None
+            if isinstance(cell, Object):
+                _nrn_object_ref(cell._obj)
+                return cell._obj
+            return _new_python_object(cell)
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return None
+
+    def _pysec_cell_equals(sec_ptr, obj):
+        try:
+            if not obj or _nrn_class_name(obj) != b"PythonObject":
+                return 0
+            return int(_unwrap_pythonobject(obj) is _cell_of(sec_ptr))
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return 0
+
+    global _mn_pysec_cell_cb, _mn_pysec_cell_equals_cb
+    _mn_pysec_cell_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        _pysec_cell
+    )
+    _mn_pysec_cell_equals_cb = ctypes.CFUNCTYPE(
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p
+    )(_pysec_cell_equals)
+    cell_slot.value = ctypes.cast(_mn_pysec_cell_cb, ctypes.c_void_p).value
+    equals_slot.value = ctypes.cast(_mn_pysec_cell_equals_cb, ctypes.c_void_p).value
+
+    def _opaque_obj2pyobj(obj):
+        # Borrowed PyObject*, as NEURON's version returns (nrnpy_p2h.cpp).
+        if not obj or _nrn_class_name(obj) != b"PythonObject":
+            return None
+        return _pythonobject_payload_ptr(obj)
+
+    global _mn_opaque_obj2pyobj_cb
+    _mn_opaque_obj2pyobj_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        _opaque_obj2pyobj
+    )
+    _install_methods_slot(_METHODS_OPAQUE_OBJ2PYOBJ_OFFSET, _mn_opaque_obj2pyobj_cb)
     return True
 
 
@@ -1785,3 +1860,4 @@ try:
 finally:
     del _probe_sec
 TYPES.validate()
+install_pysec_cell_hooks()
