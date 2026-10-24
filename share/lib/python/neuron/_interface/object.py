@@ -772,6 +772,11 @@ class Object(metaclass=_HocClassMeta):
             and _write_object_alias(self, name, val)
         ):
             return
+        if type(self).__dictoffset__:
+            # A Python subclass (neuron.HocBaseObject) keeps its own
+            # attributes, as any Python object does.
+            object.__setattr__(self, name, val)
+            return
         raise AttributeError(
             f"Cannot set '{name}': not a settable HOC property (RANGEVAR/VAR) of {self._class_name}"
         )
