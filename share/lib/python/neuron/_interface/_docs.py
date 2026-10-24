@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import pickle
+import types
 import zlib
 from pathlib import Path
 
@@ -66,3 +67,38 @@ class _ClassDoc:
 
     def __get__(self, instance, owner=None):
         return get_doc(self.name, self.fallback)
+
+
+class HocDocMethod:
+    """A Python method whose __doc__ is NEURON's help text for ``key``.
+
+    The text is read on first lookup, so class creation does no help I/O.
+    """
+
+    def __init__(self, key, func):
+        self._key = key
+        self._func = func
+        self._doc_loaded = False
+
+    def __get__(self, instance, owner=None):
+        func = self._func
+        if not self._doc_loaded:
+            func.__doc__ = get_doc(self._key, func.__doc__)
+            self._doc_loaded = True
+        return func if instance is None else types.MethodType(func, instance)
+
+
+def hoc_doc(key):
+    """Decorator: give a Python method NEURON's help text for ``key``."""
+    return lambda func: HocDocMethod(key, func)
+
+
+class _TopLevelDoc:
+    """``h.__doc__``: the neuron.h overview from neuron.doc, read on use."""
+
+    def __get__(self, instance, owner=None):
+        try:
+            from ..doc import doc_h
+        except ImportError:
+            return None
+        return doc_h

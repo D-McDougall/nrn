@@ -71,6 +71,7 @@ from .nrnref import (
     NrnStrRef,
     NrnVarRef,
 )
+from ._docs import _TopLevelDoc
 from .object import List, Object, SectionList, Vector
 from .sections import Section
 from .utils import (
@@ -1026,6 +1027,8 @@ def hclass(cls):
 
 
 class NEURON(metaclass=_Singleton):
+    __doc__ = _TopLevelDoc()
+
     def __init__(self):
         self._nrn_hoc_call = _nrn_hoc_call
         self._top_level = list_functions()

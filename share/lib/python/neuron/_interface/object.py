@@ -10,7 +10,7 @@ import sys
 import warnings
 import weakref
 
-from ._docs import _ClassDoc
+from ._docs import _ClassDoc, hoc_doc
 from .api import (
     hoc_locked,
     _ERR_BUF_SIZE,
@@ -1477,6 +1477,7 @@ class Vector(Object):
         cbuffer = buf_from_mem(ptr, size * numpy.dtype(float).itemsize, 0x200)
         return numpy.ndarray((size,), float, cbuffer, order="C")
 
+    @hoc_doc("Vector.to_python")
     def to_python(self, dest=None):
         """Return Vector contents as a Python list (or fill *dest*)."""
         size = len(self)
@@ -1486,6 +1487,7 @@ class Vector(Object):
             return dest
         return result
 
+    @hoc_doc("Vector.from_python")
     def from_python(self, seq):
         """Fill this Vector from a Python sequence. Resizes to match."""
         values = _vector_values(seq)
