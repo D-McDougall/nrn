@@ -62,19 +62,6 @@ def _get_libc():
     return _libc
 
 
-_NSEG_GENERATION = None
-
-
-def _nseg_generations():
-    # sections imports this module; bind its counter on first use.
-    global _NSEG_GENERATION
-    if _NSEG_GENERATION is None:
-        from .sections import NSEG_GENERATION
-
-        _NSEG_GENERATION = NSEG_GENERATION
-    return _NSEG_GENERATION
-
-
 def _symbol_info(name):
     from .sections import _get_symbol_info
 
@@ -159,14 +146,16 @@ class NrnRangeVarRef(NrnRef):
             raise NameError(f"No such mechanism or variable: {self._name}")
         # NEURON's handle follows its node through nseg changes and dies with
         # it (sections.follow_node); _check_nseg moves _x along.
-        self._nseg = _nseg_generations().get(sec._sec, 0)
+        from .sections import sync_nseg_history
+
+        self._nseg = sync_nseg_history(sec._sec)
 
     def _check_nseg(self, sec):
-        generation = _nseg_generations().get(sec._sec, 0)
+        from .sections import follow_node, sync_nseg_history
+
+        generation = sync_nseg_history(sec._sec)
         if generation == self._nseg:
             return
-        from .sections import follow_node
-
         x = follow_node(sec._sec, self._nseg, self._x, bool(sec.orientation()))
         if x is None:
             raise ValueError("Invalid data_handle")

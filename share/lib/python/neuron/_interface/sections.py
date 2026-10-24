@@ -858,7 +858,7 @@ _anon_section_count = 0
 # range-variable references record it at creation: NEURON frees the old nodes'
 # storage when nseg changes, so they die. A dict read is far cheaper than
 # reading nseg through the C API on every wrapper creation. An nseg change made
-# from HOC code is not counted.
+# from HOC code is counted only when sync_nseg_history next sees it.
 NSEG_GENERATION = {}
 
 # nseg at each generation, per section pointer: NSEG_HISTORY[sec][g]. NEURON
@@ -875,6 +875,24 @@ def _record_nseg_change(sec_ptr, old, new):
         history = NSEG_HISTORY[sec_ptr] = [old]
     history.append(new)
     NSEG_GENERATION[sec_ptr] = len(history) - 1
+
+
+def sync_nseg_history(sec_ptr):
+    """Record an nseg change made from HOC since the last record.
+
+    Returns the section's current generation. Range-variable references call
+    it when they are made and before each use, so a reference follows (or
+    dies with) its node through nseg changes that HOC code makes, too.
+    Several HOC changes between two calls count as one.
+    """
+    current = int(_nrn_nseg_get(sec_ptr))
+    history = NSEG_HISTORY.get(sec_ptr)
+    if history is None:
+        NSEG_HISTORY[sec_ptr] = [current]
+        NSEG_GENERATION[sec_ptr] = 0
+    elif history[-1] != current:
+        _record_nseg_change(sec_ptr, history[-1], current)
+    return NSEG_GENERATION[sec_ptr]
 
 
 def follow_node(sec_ptr, generation, x, reversed_):
