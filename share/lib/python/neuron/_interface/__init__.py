@@ -78,6 +78,7 @@ from .utils import (
     TEMPLATE_CONVERTERS,
     FuncWrapper,
     _is_python_object_arg,
+    check_ascii_name,
     _PythonObjectArg,
     _Singleton,
     _wrap_owned_object,
@@ -1091,6 +1092,7 @@ class NEURON(metaclass=_Singleton):
         return sorted(names)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
         # Top-level fork of NEURON's dispatch (the component fork is
         # Object.__getattr__). Real NEURON's type-code switch is
         # nrnpython/nrnpy_hoc.cpp:1302-1407. Covered here:
@@ -1343,6 +1345,7 @@ class NEURON(metaclass=_Singleton):
         raise AttributeError(f"'NEURON' object has no attribute '{name}'")
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # Internal state (`Section`, `hclass`, every underscore-prefixed name)
         # is a real attribute. Every other name is a top-level HOC variable and
         # is written to HOC, as in real NEURON, rather than shadowed by a Python
@@ -1487,6 +1490,8 @@ class NEURON(metaclass=_Singleton):
         if isinstance(value, (int, float)) or not _is_python_object_arg(value):
             return NrnDoubleRef(float(value))
         if isinstance(value, (str, bytes)):
+            if isinstance(value, str) and not value.isascii():
+                raise RuntimeError("string arg must have only ascii characters")
             return NrnStrRef(value)
         return NrnObjectRef(value)
 

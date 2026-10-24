@@ -49,6 +49,7 @@ from .nrnref import NrnRangeArrayRef, NrnRangeVarRef, NrnRef
 from .utils import (
     _try_wrap_density_nmodlrandom,
     list_functions,
+    check_ascii_name,
     list_methods,
 )
 
@@ -556,6 +557,7 @@ class Segment:
         return sorted(attrs)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
         if name.startswith("__") and name.endswith("__"):
             # NEURON checks the section on every attribute; pydoc's
             # __name__ probe makes help(seg) raise for a deleted section.
@@ -722,6 +724,7 @@ class Segment:
         )
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # seg._ref_p_t2 = ref wires mechanism t2's POINTER p, the same as
         # seg.t2._ref_p = ref (NEURON's test_pnt2).
         if name.startswith("_ref_") and isinstance(value, NrnRef):
@@ -936,6 +939,8 @@ class Section:
     def __init__(self, name=None, cell=None, _pynative=True):
         if cell is not None and isinstance(cell, str):
             raise TypeError("cell must be an object, not a string")
+        if cell is not None and not str(cell).isascii():
+            raise ValueError("cell name contains non ascii character")
         if name is None:
             # No name: auto-generate a unique one, as real NEURON does.
             global _anon_section_count
@@ -995,6 +1000,7 @@ class Section:
         return hash(self._sec)
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # Private names and known @property setters go to super();
         # everything else broadcasts across segments, matching real NEURON's
         # `sec.gnabar_hh = ...` semantics.
@@ -1068,6 +1074,7 @@ class Section:
         return sorted(attrs)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
         # An unset _sec slot (partial __init__) would recurse through
         # _check_alive; raise AttributeError directly instead.
         try:

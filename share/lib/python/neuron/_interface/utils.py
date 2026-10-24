@@ -32,6 +32,12 @@ from .nrnref import (
 )
 
 
+def check_ascii_name(name):
+    """Raise TypeError for a non-ascii attribute name, as NEURON does."""
+    if not name.isascii():
+        raise TypeError(f"attribute name must contain only ascii characters: {name!r}")
+
+
 class FuncWrapper:
     # __doc__ is a property backed by the _doc slot (a class variable and a
     # same-named slot would clash). Lookup is deferred to avoid help I/O
@@ -326,7 +332,12 @@ def _push_args(args, return_rollback=False):
             elif isinstance(arg, NrnRef):
                 descriptors.append(("ref", arg))
             elif isinstance(arg, (str, bytes)):
-                b = arg.encode("utf-8") if isinstance(arg, str) else arg
+                if isinstance(arg, str):
+                    if not arg.isascii():
+                        raise RuntimeError("string arg must have only ascii characters")
+                    b = arg.encode("ascii")
+                else:
+                    b = arg
                 c_arg = ctypes.c_char_p(b)
                 temp_strs.append(c_arg)
                 descriptors.append(("str", ctypes.pointer(c_arg)))

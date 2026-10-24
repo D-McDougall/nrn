@@ -22,6 +22,7 @@ from .utils import (
     FuncWrapper,
     _try_wrap_density_nmodlrandom,
     list_functions,
+    check_ascii_name,
 )
 
 # Mechanisms that are always present and should be skipped during iteration
@@ -322,6 +323,7 @@ class Mechanism:
 
     def __getattr__(self, name):
         """Resolve unsuffixed attribute name to a range variable read or an NMODL function wrapper."""
+        check_ascii_name(name)
         # HOC can delete the host section while this Mechanism is held; check
         # before touching freed Section*/node storage. Dunder probes
         # (copy/pickle, pydoc's __name__) check only that the section is
@@ -502,6 +504,7 @@ class Mechanism:
 
     def __setattr__(self, name, value):
         """Write unsuffixed range variable on the mechanism at the current segment; populates cache."""
+        check_ascii_name(name)
         # POINTER assignment: seg.mech._ref_PTR = src._ref_X.
         if name.startswith("_ref_"):
             if isinstance(value, NrnRef):
