@@ -1729,11 +1729,18 @@ static void pycell_name2sec_maps_fill() {
     // ForAllSections(sec)
     ITERATE(qsec, section_list) {
         Section* sec = hocSEC(qsec);
-        if (sec->prop && sec->prop->dparam[PROP_PY_INDEX].get<void*>()) {  // PythonSection
+        // A Python Section: libnrnpython's own section objects set
+        // PROP_PY_INDEX; the ctypes interface creates plain sections whose
+        // cell comes only from the nrnpy_pysec_cell_p_ hook. Either way it
+        // is not in a HOC cell (dparam[6]).
+        if (sec->prop && !sec->prop->dparam[6].get<Object*>()) {
             // Assume we can associate with a Python Cell
             // Sadly, cannot use nrn_sec2cell Object* as the key because it
             // is not unique and the map needs definite PyObject* keys.
             Object* ho = nrn_sec2cell(sec);
+            if (!ho && !sec->prop->dparam[PROP_PY_INDEX].get<void*>()) {
+                continue;  // a HOC section outside any cell
+            }
             if (ho) {
                 void* pycell = nrn_opaque_obj2pyobj(ho);
                 hoc_obj_unref(ho);
@@ -1741,10 +1748,12 @@ static void pycell_name2sec_maps_fill() {
                     SecName2Sec& sn2s = pycell_name2sec_maps[pycell];
                     std::string name = secname(sec);
                     // basename is after the cell name component that ends in '.'.
+                    // The ctypes interface's HOC name has no cell component.
                     size_t last_dot = name.rfind(".");
-                    assert(last_dot != std::string::npos);
-                    assert(name.size() > (last_dot + 1));
-                    std::string basename = name.substr(last_dot + 1);
+                    assert(last_dot == std::string::npos || name.size() > (last_dot + 1));
+                    std::string basename = last_dot == std::string::npos
+                                               ? name
+                                               : name.substr(last_dot + 1);
                     if (sn2s.find(basename) != sn2s.end()) {
                         hoc_execerr_ext("Python Section name, %s, is not unique in the Python cell",
                                         name.c_str());
