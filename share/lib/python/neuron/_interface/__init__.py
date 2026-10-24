@@ -1462,10 +1462,10 @@ class NEURON(metaclass=_Singleton):
             return
 
         # Functions, mechanisms, templates, sections: not assignable.
-        raise TypeError(f"Cannot assign to HOC symbol '{name}' (symbol type {_type}).")
+        raise TypeError(f"HOC symbol '{name}' is not assignable")
 
     def __repr__(self):
-        return "<NEURON>"
+        return "<TopLevelHocInterpreter>"
 
     def ref(self, value):
         """Return a fresh anonymous reference cell, like real NEURON's ``h.ref(x)``.

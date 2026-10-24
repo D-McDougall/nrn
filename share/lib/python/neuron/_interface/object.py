@@ -1901,6 +1901,9 @@ class _TemplateSectionArray:
             )
         return _resolve_template_section(self._owner, self._name, idx=idx)
 
+    def __setitem__(self, idx, value):
+        raise TypeError(f"section {self._name}[{idx}] is not assignable")
+
     def __len__(self):
         return self._size
 
@@ -1912,6 +1915,11 @@ class _TemplateSectionArray:
         # _owner is None for a top-level array.
         scope = f"{self._owner._class_name}." if self._owner is not None else ""
         return f"<template section array {scope}{self._name}[{self._size}]>"
+
+    def __str__(self):
+        # NEURON's name for an array: "dend[?]", or "Cell[0].dend[?]".
+        scope = f"{self._owner.hname()}." if self._owner is not None else ""
+        return f"{scope}{self._name}[?]"
 
 
 # ---------------------------------------------------------------------------
