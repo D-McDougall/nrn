@@ -6,6 +6,7 @@ import functools
 import numbers
 import operator
 import os
+import struct
 import sys
 import warnings
 import weakref
@@ -481,6 +482,15 @@ class Object(metaclass=_HocClassMeta):
 
     def __deepcopy__(self, memo):
         """Reject deepcopy for HOC objects other than Vector."""
+        raise TypeError("HocObject: Only Vector instance can be pickled")
+
+    # Mirrors the non-Vector branch of hocpickle_reduce in
+    # src/nrnpython/nrnpy_hoc.cpp. Without it, pickle would save the slots,
+    # and _obj would be saved as the raw address of the HOC object. That
+    # address means nothing in another process, and in this process the
+    # unpickled wrapper would hold the object without a HOC reference.
+    # object.__reduce_ex__ calls this method, so it covers every protocol.
+    def __reduce__(self):
         raise TypeError("HocObject: Only Vector instance can be pickled")
 
     def hocobjptr(self):
@@ -1372,6 +1382,42 @@ class Vector(Object):
         copied = self.c()
         memo[id(self)] = copied
         return copied
+
+    # Mirrors hocpickle_reduce in src/nrnpython/nrnpy_hoc.cpp, so pickles
+    # are interchangeable with the C++ module. Unpickling calls
+    # neuron._pkl(0), which returns an empty n.Vector, and then calls
+    # __setstate__ on it with the state (version, sentinel, size, data):
+    # version is always 1; sentinel is the double 2.0 in this machine's
+    # byte order; data is the size values as native doubles.
+    def __reduce__(self):
+        from neuron import _pkl
+
+        size = len(self)
+        data = ctypes.string_at(_nrn_vector_data(self._obj), size * 8) if size else b""
+        return (_pkl, (0,), (1, struct.pack("d", 2.0), size, data))
+
+    # Mirrors hocpickle_setstate in src/nrnpython/nrnpy_hoc.cpp, with the
+    # same exception types and messages. The version number is not checked,
+    # as in the C++ code. The sentinel tells us the byte order of the
+    # machine that made the pickle: if it does not read back as 2.0 here,
+    # that machine had the other byte order, so every value is byte-swapped.
+    def __setstate__(self, state):
+        if len(state) != 4:
+            raise TypeError(f"must be sequence of length 4, not {len(state)}")
+        version, sentinel, size, data = state
+        version = operator.index(version)
+        size = operator.index(size)
+        if not isinstance(data, bytes) or not isinstance(sentinel, bytes):
+            raise TypeError("pickle not returning string")
+        if len(sentinel) != 8:
+            raise ValueError("endian_data size is not sizeof(double)")
+        if len(data) != size * 8:
+            raise ValueError("buffer size does not match array size")
+        values = array.array("d", data)
+        if struct.unpack("d", sentinel)[0] != 2.0:
+            values.byteswap()
+        self.resize(size)
+        _copy_into_vector(self, values)
 
     @property
     def x(self):
