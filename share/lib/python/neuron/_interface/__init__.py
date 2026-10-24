@@ -14,11 +14,15 @@ from .api import (
     symbol_array_dims,
     _ERR_BUF_SIZE,
     _METHODS_CALL_FUNC_OFFSET,
+    _METHODS_CALL_PICKLEF_OFFSET,
     _METHODS_HOC_NRNPYTHON_OFFSET,
     _METHODS_MPI_ALLTOALL_TYPE_OFFSET,
     _METHODS_OPAQUE_OBJ2PYOBJ_OFFSET,
+    _METHODS_PICKLE2PO_OFFSET,
+    _METHODS_PO2PICKLE_OFFSET,
     _METHODS_PRAXIS_EFUN_OFFSET,
     _MIN_VALID_DATAPTR,
+    _PICKLE_FAILED,
     TYPES,
     _call_at_top_level,
     _check_nrn_error,
@@ -759,6 +763,106 @@ def _register_call_func():
 
 
 _register_call_func()
+
+
+def _register_pickle_hooks():
+    """ParallelContext moving Python objects: submit, pyret, post, pack, upkpyobj.
+
+    Installs three methods-table slots (nrnpy.h), each matching the function
+    of the same name in nrnpy_p2h.cpp:
+
+    - po2pickle: the pickled bytes of a PythonObject's value, or no bytes
+      for any other object, so that submit takes it as a HOC object with a
+      method name;
+    - pickle2po: a new PythonObject, at refcount 1, holding the unpickled
+      value;
+    - call_picklef: unpickle a submitted callable, call it with the
+      arguments on the HOC stack, and return its pickled result.
+
+    po2pickle and call_picklef lend the caller their bytes, which stay alive
+    in _pickle_results until the same hook is called again. ParallelContext
+    calls these hooks only from the thread that runs Python. Pickling uses
+    pickle's default protocol, as NEURON's own hooks do, so ranks with either
+    provider can exchange the bytes. A failure is stashed, reported as a
+    failed pickle (nrnpy.h), and raised when the HOC call returns.
+    """
+    import pickle
+
+    _pickle_results = {}
+
+    def _lend(hook, data, len_ptr):
+        buf = ctypes.c_char_p(data)
+        _pickle_results[hook] = (data, buf)
+        len_ptr[0] = len(data)
+        return ctypes.cast(buf, ctypes.c_void_p).value
+
+    def _po2pickle(obj, len_ptr):
+        try:
+            if not obj or _nrn_class_name(obj) != b"PythonObject":
+                len_ptr[0] = 0
+                return None
+            data = pickle.dumps(_unwrap_pythonobject(obj))
+            return _lend("po2pickle", data, len_ptr)
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            len_ptr[0] = _PICKLE_FAILED
+            return None
+
+    def _pickle2po(data, length):
+        try:
+            value = pickle.loads(ctypes.string_at(data, length))
+            obj = _py_pyobj_to_hoc_cfunctype(value)
+            if obj is None:
+                raise TypeError("cannot make a PythonObject for the unpickled value")
+            return obj
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return None
+
+    def _call_picklef(fdata, flen, narg, len_ptr):
+        remaining = narg
+
+        def argument_popped():
+            nonlocal remaining
+            remaining -= 1
+
+        try:
+            args = []
+            while remaining:
+                args.append(_pop_hoc_python_value(on_pop=argument_popped))
+            args.reverse()
+            func = pickle.loads(ctypes.string_at(fdata, flen))
+            data = pickle.dumps(_call_at_top_level(func, args))
+            return _lend("call_picklef", data, len_ptr)
+        except BaseException as exc:
+            # Leave the HOC stack as core expects even when a pop failed.
+            try:
+                while remaining:
+                    _pop_hoc_python_value(discard=True, on_pop=argument_popped)
+            except BaseException:
+                pass
+            sys.stderr.write("".join(traceback.format_exception(exc)))
+            _stash_callback_exc(exc)
+            len_ptr[0] = _PICKLE_FAILED
+            return None
+
+    global _mn_po2pickle_cb, _mn_pickle2po_cb, _mn_call_picklef_cb
+    size_ptr = ctypes.POINTER(ctypes.c_size_t)
+    _mn_po2pickle_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, size_ptr)(
+        _po2pickle
+    )
+    _mn_pickle2po_cb = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t
+    )(_pickle2po)
+    _mn_call_picklef_cb = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, size_ptr
+    )(_call_picklef)
+    _install_methods_slot(_METHODS_PO2PICKLE_OFFSET, _mn_po2pickle_cb)
+    _install_methods_slot(_METHODS_PICKLE2PO_OFFSET, _mn_pickle2po_cb)
+    _install_methods_slot(_METHODS_CALL_PICKLEF_OFFSET, _mn_call_picklef_cb)
+
+
+_register_pickle_hooks()
 
 
 def _cxx_array_allocator():
