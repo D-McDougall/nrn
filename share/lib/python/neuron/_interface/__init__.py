@@ -56,6 +56,8 @@ from .api import (
     _unwrap_pythonobject,
     _nrn_object_ref,
     _py_pyobj_to_hoc_cfunctype,
+    _native_methods_slot,
+    _METHODS_PO2HO_OFFSET,
     libnrniv,
 )
 from .nrnref import (
@@ -528,6 +530,43 @@ def _mpi_rank_and_size():
     return myid, nhost
 
 
+def _new_temp_python_object(value):
+    """A new HOC PythonObject holding *value*, at refcount 0.
+
+    For a methods-table hook whose C++ caller takes ownership by passing the
+    result to hoc_temp_objptr, as py_alltoall_type in ocbbs.cpp does.
+    """
+    obj = _py_pyobj_to_hoc_cfunctype(value, take_ref=False)
+    if obj is not None:
+        return obj
+    # None means libnrnpython provides PythonObject (under `nrniv -python`),
+    # and only its nrnpy_po2ho can make one. libnrnpython stores that function
+    # in the po2ho slot of the methods table, so it is called through the slot
+    # rather than looked up by its C++ name. PYFUNCTYPE keeps the GIL held, as
+    # nrnpy_po2ho uses the Python C API.
+    #
+    # nrnpy_po2ho returns the new PythonObject at refcount 1, but this hook
+    # must return it at 0, like the Option B path above. HOC takes its own
+    # reference when it pushes the result (hoc_push_object), and the Python
+    # caller ends up holding exactly that one. So drop the count to 0, as
+    # NEURON's own py_alltoall_type does (--ho->refcount in nrnpy_p2h.cpp).
+    # Left at 1, the object would never be freed; nrn_object_unref would free
+    # it at once. refcount is the first field of struct Object
+    # (src/oc/hocdec.h). nrnpy_po2ho turns None into a nil HOC object (NULL),
+    # which the caller hands back to Python as None.
+    if value is None:
+        return None
+    po2ho_addr = _native_methods_slot(_METHODS_PO2HO_OFFSET)
+    if not po2ho_addr:
+        raise TypeError(f"cannot return Python {type(value).__name__} to HOC")
+    po2ho = ctypes.PYFUNCTYPE(ctypes.c_void_p, ctypes.py_object)(po2ho_addr)
+    obj = po2ho(value)
+    if not obj:
+        raise TypeError(f"cannot return Python {type(value).__name__} to HOC")
+    ctypes.c_int.from_address(obj).value -= 1
+    return obj
+
+
 def _register_mpi_alltoall_type():
     """ParallelContext's py_alltoall family: py_alltoall, py_allgather,
     py_gather, py_broadcast and py_scatter.
@@ -557,7 +596,7 @@ def _register_mpi_alltoall_type():
         else:
             value = _hoc_arg_to_python(1)
             result = value if type_ == 4 else [value]
-        return _py_pyobj_to_hoc_cfunctype(result, take_ref=False)
+        return _new_temp_python_object(result)
 
     def _multi_rank(size, type_, myid, nhost):
         global _mpi_collectives
@@ -593,7 +632,7 @@ def _register_mpi_alltoall_type():
                     result = mpi.gather(item, root, myid, nhost)
                 else:
                     result = mpi.broadcast(item, root, myid)
-        return _py_pyobj_to_hoc_cfunctype(result, take_ref=False)
+        return _new_temp_python_object(result)
 
     def _alltoall_type(size, type_):
         try:
@@ -612,7 +651,16 @@ def _register_mpi_alltoall_type():
     _mn_alltoall_type_cb = ctypes.CFUNCTYPE(
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int
     )(_alltoall_type)
-    _install_methods_slot(_METHODS_MPI_ALLTOALL_TYPE_OFFSET, _mn_alltoall_type_cb)
+    # Installed even over libnrnpython's own py_alltoall_type (nrnpy_p2h.cpp),
+    # which fills this slot under `nrniv -python`. For allgather, gather and
+    # broadcast that C++ function reads the Python argument from curargs_,
+    # which only the C++ hoc module's hocobj_call sets. A call made through
+    # this interface goes through nrn_method_call instead, so curargs_ is NULL
+    # and the C++ function crashes. _alltoall_type reads its argument from the
+    # HOC stack, so it works whichever way the method was called.
+    _install_methods_slot(
+        _METHODS_MPI_ALLTOALL_TYPE_OFFSET, _mn_alltoall_type_cb, replace_native=True
+    )
 
 
 _register_mpi_alltoall_type()

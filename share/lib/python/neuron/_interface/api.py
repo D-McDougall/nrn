@@ -496,21 +496,41 @@ _METHODS_HOC_NRNPYTHON_OFFSET = 104
 # py_gather, py_broadcast and py_scatter call it and assert it is set.
 _METHODS_MPI_ALLTOALL_TYPE_OFFSET = 144
 
+# po2ho (field 22): nrnpy_po2ho, PyObject* -> new PythonObject at refcount 1.
+# Only libnrnpython fills it (nrnpy_p2h.cpp); this interface reads it.
+_METHODS_PO2HO_OFFSET = 176
+
 # praxis_efun (field 24): h.fit_praxis(python_callable, vec) asserts it is set.
 _METHODS_PRAXIS_EFUN_OFFSET = 192
 
 
-def _install_methods_slot(offset, callback):
-    """Fill one empty methods-table slot; a native provider's stays untouched."""
+def _install_methods_slot(offset, callback, replace_native=False):
+    """Fill one empty methods-table slot; a native provider's stays untouched.
+
+    With replace_native=True the callback is installed even when a native
+    provider (libnrnpython, under ``nrniv -python``) has already filled the
+    slot. Only a slot whose native function cannot work with calls made
+    through this interface should ask for that; see
+    _register_mpi_alltoall_type.
+    """
     try:
         methods = ctypes.c_void_p.in_dll(libnrniv, "_ZN6neuron6python7methodsE")
     except ValueError:
         return False
     slot = ctypes.c_void_p.from_address(ctypes.addressof(methods) + offset)
-    if slot.value:
+    if slot.value and not replace_native:
         return False
     slot.value = ctypes.cast(callback, ctypes.c_void_p).value
     return True
+
+
+def _native_methods_slot(offset):
+    """Address of the function in one methods-table slot, or None if empty."""
+    try:
+        methods = ctypes.c_void_p.in_dll(libnrniv, "_ZN6neuron6python7methodsE")
+    except ValueError:
+        return None
+    return ctypes.c_void_p.from_address(ctypes.addressof(methods) + offset).value
 
 
 # --- Method-return typing (int / bool vs float) ---
