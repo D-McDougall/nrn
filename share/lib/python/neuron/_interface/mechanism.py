@@ -343,6 +343,7 @@ class Mechanism:
             var = name[5:]
             full = var if self._is_ion else "%s_%s" % (var, self._name)
             from .sections import (
+                OpaquePointer,
                 _get_symbol_info,
                 _is_pointer_rangevar,
                 _pointer_rangevar_get,
@@ -357,9 +358,11 @@ class Mechanism:
                 return NrnRangeArrayRef(self._seg._sec, self._seg._x, full)
             sym = _nrn_symbol(full.encode("utf-8"))
             if sym and _is_pointer_rangevar(full, sym):
-                _pointer_rangevar_get(
+                value = _pointer_rangevar_get(
                     self._seg._sec, self._seg._x, full
                 )  # raises if unset
+                if isinstance(value, OpaquePointer):
+                    return value  # as NEURON: no reference to a non-double
             return NrnRangeVarRef(self._seg._sec, self._seg._x, full)
         cache = _MECH_ATTR_CACHE.get(self._name)
         if cache is None:

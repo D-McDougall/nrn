@@ -181,7 +181,9 @@ def _pointer_rangevar_get(section, x, name):
 def _pointer_rangevar_set(section, x, name, value):
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ValueError(f"bad value for {name}: must be a double")
-    _call_pointer_proc(section, x, name, "_mn_ptr_set", float(value))
+    result = _call_pointer_proc(section, x, name, "_mn_ptr_set", float(value))
+    if isinstance(result, OpaquePointer):
+        raise ValueError("can't assign value to opaque pointer")
 
 
 # ── _ArrayRangeVar ────────────────────────────────────────────────────────────
@@ -571,7 +573,9 @@ class Segment:
             if info[2]:
                 return NrnRangeArrayRef(self.sec, self.x, name)
             if _is_pointer_rangevar(name, info[0]):
-                _pointer_rangevar_get(self.sec, self.x, name)  # raises if unset
+                value = _pointer_rangevar_get(self.sec, self.x, name)  # raises if unset
+                if isinstance(value, OpaquePointer):
+                    return value  # as NEURON: no reference to a non-double
             return NrnRangeVarRef(self.sec, self.x, name)
 
         # Mechanism instance cache (Segment._mech_cache).
