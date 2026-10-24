@@ -565,6 +565,60 @@ def install_rvp_rxd_hook(to_callable):
     return True
 
 
+def install_segment_hooks():
+    """Let NEURON read a segment passed to HOC as an object.
+
+    nrn_seg_or_x_arg and nrn_seg_or_x_arg2 (point.cpp) and distance()
+    (solve.cpp) accept a segment argument as a PythonObject and get its
+    section and x through nrnpy_o2loc_p_ and nrnpy_o2loc2_p_. The second
+    also accepts an object with a ``segment`` attribute, such as an rxd node,
+    or a list holding one. A hook cannot raise: on failure it leaves the
+    section NULL, which the caller reports, and the error is raised when the
+    HOC call returns. NEURON's versions (o2loc in nrnpy_nrn.cpp) exist only
+    where libnrnpython is loaded. Returns True if the hooks were installed.
+    """
+    from .sections import Segment
+
+    try:
+        slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_o2loc_p_")
+        slot2 = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_o2loc2_p_")
+    except ValueError:
+        return False
+
+    def _locate(obj, psec, px, follow_segment_attr):
+        try:
+            if not obj or _nrn_class_name(obj) != b"PythonObject":
+                raise TypeError("not a Python nrn.Segment")
+            seg = _unwrap_pythonobject(obj)
+            if follow_segment_attr and not isinstance(seg, Segment):
+                if isinstance(seg, list):
+                    if len(seg) != 1:
+                        raise TypeError("If a list is supplied, it must be of length 1")
+                    seg = seg[0]
+                if not isinstance(seg, Segment):
+                    seg = seg.segment
+            if not isinstance(seg, Segment):
+                raise TypeError("not a Python nrn.Segment")
+            seg.sec._check_alive()
+            psec[0] = seg.sec._sec
+            px[0] = seg.x
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+
+    global _mn_o2loc_cb, _mn_o2loc2_cb
+    hook_type = ctypes.CFUNCTYPE(
+        None,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_double),
+    )
+    _mn_o2loc_cb = hook_type(lambda obj, psec, px: _locate(obj, psec, px, False))
+    _mn_o2loc2_cb = hook_type(lambda obj, psec, px: _locate(obj, psec, px, True))
+    slot.value = ctypes.cast(_mn_o2loc_cb, ctypes.c_void_p).value
+    slot2.value = ctypes.cast(_mn_o2loc2_cb, ctypes.c_void_p).value
+    return True
+
+
 def install_pysec_cell_hooks():
     """Let NEURON find the cell of a Python section, h.Section(cell=obj).
 
@@ -1876,3 +1930,4 @@ finally:
     del _probe_sec
 TYPES.validate()
 install_pysec_cell_hooks()
+install_segment_hooks()
