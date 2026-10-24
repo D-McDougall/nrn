@@ -546,12 +546,17 @@ static std::vector<char> pickle(PyObject* p) {
     return std::vector<char>(r.c_str(), r.c_str() + r.size());
 }
 
-static std::vector<char> po2pickle(Object* ho) {
+// The pickling hooks lend their result until their next call (see nrnpy.h).
+static const char* po2pickle(Object* ho, std::size_t* len) {
+    static std::vector<char> result;
     setpickle();
     if (ho && ho->ctemplate->sym == nrnpy_pyobj_sym_) {
-        return pickle(nrnpy_hoc2pyobject(ho));
+        result = pickle(nrnpy_hoc2pyobject(ho));
+        *len = result.size();
+        return result.data();
     } else {
-        return {};
+        *len = 0;
+        return nullptr;
     }
 }
 
@@ -563,9 +568,9 @@ static nb::object unpickle(const std::vector<char>& s) {
     return unpickle(s.data(), s.size());
 }
 
-static Object* pickle2po(const std::vector<char>& s) {
+static Object* pickle2po(const char* data, std::size_t len) {
     setpickle();
-    nb::object po = unpickle(s);
+    nb::object po = unpickle(data, len);
     Object* ho = nrnpy_pyobject_in_obj(po.ptr());
     return ho;
 }
@@ -613,12 +618,13 @@ static neuron::unique_cstr nrnpyerr_str() {
     return {};
 }
 
-std::vector<char> call_picklef(const std::vector<char>& fname, int narg) {
-    // fname is a pickled callable, narg is the number of args on the
+static const char* call_picklef(const char* fdata, std::size_t flen, int narg, std::size_t* len) {
+    // fdata is a pickled callable, narg is the number of args on the
     // hoc stack with types double, char*, hoc Vector, and PythonObject
     // callable return must be pickleable.
+    static std::vector<char> result;
     setpickle();
-    nb::bytes ps(fname.data(), fname.size());
+    nb::bytes ps(fdata, flen);
 
     auto callable = nb::borrow<nb::callable>(loads(ps));
     assert(callable);
@@ -629,8 +635,8 @@ std::vector<char> call_picklef(const std::vector<char>& fname, int narg) {
         args.append(arg);
     }
     args.reverse();  // since top of hoc stack was last arg before the for loop.
-    nb::object result = callable(*args);
-    if (!result) {
+    nb::object ret = callable(*args);
+    if (!ret) {
         auto mes = nrnpyerr_str();
         if (mes.is_valid()) {
             Fprintf(stderr, fmt::format("{}\n", mes.c_str()).c_str());
@@ -640,7 +646,9 @@ std::vector<char> call_picklef(const std::vector<char>& fname, int narg) {
             PyErr_Print();
         }
     }
-    return pickle(result.ptr());
+    result = pickle(ret.ptr());
+    *len = result.size();
+    return result.data();
 }
 
 #include "nrnmpi.h"
