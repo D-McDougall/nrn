@@ -1748,12 +1748,10 @@ static void pycell_name2sec_maps_fill() {
                     SecName2Sec& sn2s = pycell_name2sec_maps[pycell];
                     std::string name = secname(sec);
                     // basename is after the cell name component that ends in '.'.
-                    // The ctypes interface's HOC name has no cell component.
                     size_t last_dot = name.rfind(".");
-                    assert(last_dot == std::string::npos || name.size() > (last_dot + 1));
-                    std::string basename = last_dot == std::string::npos
-                                               ? name
-                                               : name.substr(last_dot + 1);
+                    assert(last_dot != std::string::npos);
+                    assert(name.size() > (last_dot + 1));
+                    std::string basename = name.substr(last_dot + 1);
                     if (sn2s.find(basename) != sn2s.end()) {
                         hoc_execerr_ext("Python Section name, %s, is not unique in the Python cell",
                                         name.c_str());
