@@ -515,6 +515,7 @@ class Segment:
         return int(_nrn_segment_node_index(self._sec._sec, self._x))
 
     def __dir__(self):
+        self._sec._check_alive()
         attrs = set(super().__dir__())
         # Standard segment attributes always available
         attrs.update(
@@ -555,6 +556,10 @@ class Segment:
         return sorted(attrs)
 
     def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            # NEURON checks the section on every attribute; pydoc's
+            # __name__ probe makes help(seg) raise for a deleted section.
+            self._sec._check_alive()
         if name.startswith("_ref_"):
             name = name[5:]
             info = _get_symbol_info(name)
@@ -700,6 +705,7 @@ class Segment:
         # when its last reference goes) would then live until the next
         # garbage collection. NEURON frees it at once (test_nrntest_thread
         # counted an extra cell's mechanism instances).
+        self._sec._check_alive()
         return Segment(self._sec, self._x)
 
     def _assign_suffixed_pointer(self, suffixed, src_ref):
@@ -1082,9 +1088,16 @@ class Section:
 
     def allseg(self):
         """Iterate all segments including endpoints at x=0 and x=1."""
-        yield self(0)
-        yield from self
-        yield self(1)
+        # Not a generator: a deleted section raises here, as in NEURON,
+        # rather than at the first next().
+        self._check_alive()
+
+        def segments():
+            yield self(0)
+            yield from self
+            yield self(1)
+
+        return segments()
 
     def insert(self, mechanism):
         from .mechanism import DensityMechanism
@@ -1388,6 +1401,7 @@ class Section:
         """Return the parent Segment, or None if this is a root section."""
         from . import NEURON
 
+        self._check_alive()
         n = NEURON()
         parent_ptr = _nrn_section_parent(self._sec)
         if not parent_ptr:
@@ -1402,6 +1416,7 @@ class Section:
         Walks the section's own child/sibling chain via the nrn#3835 accessors,
         in the same order as real NEURON's ``SectionRef.child[i]``.
         """
+        self._check_alive()
         result = []
         child_ptr = _nrn_section_child(self._sec)
         while child_ptr:

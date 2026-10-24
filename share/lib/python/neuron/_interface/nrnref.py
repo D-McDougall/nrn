@@ -470,6 +470,7 @@ class NrnObjectPropertyRef(NrnRef):
         # node is freed, and pushing its property then SIGABRTs. Same guard as
         # the direct ic.amp path.
         obj._check_host_alive()
+        obj._check_located()
 
         if self._idx is None:
             _property_push_checked(obj._obj, self._name)
@@ -483,6 +484,7 @@ class NrnObjectPropertyRef(NrnRef):
         if obj is None:
             raise ReferenceError("Referenced object no longer exists")
         obj._check_host_alive()  # HOC-deleted host: clean raise, not SIGABRT.
+        obj._check_located()
 
         if self._idx is None:
             return _property_get_checked(obj._obj, self._name)
@@ -496,6 +498,7 @@ class NrnObjectPropertyRef(NrnRef):
         if obj is None:
             raise ReferenceError("Referenced object no longer exists")
         obj._check_host_alive()  # HOC-deleted host: clean raise, not SIGABRT.
+        obj._check_located()
 
         if self._idx is None:
             _ref_property_set_checked(obj._obj, self._name, value)

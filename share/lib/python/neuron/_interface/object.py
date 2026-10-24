@@ -760,7 +760,14 @@ class Object(metaclass=_HocClassMeta):
         # Skipped for underscore names so the weakref bookkeeping does not
         # recurse.
         if not name.startswith("_"):
-            self._check_host_alive()
+            try:
+                self._check_host_alive()
+            except (ReferenceError, RuntimeError):
+                # Deleting a section unlocates its point processes, as in
+                # NEURON: has_loc(), get_segment() and loc() still work, and
+                # variables raise "No value" through _check_located.
+                self._host_section = None
+                self._host_section_ref = None
         if name.startswith("_ref_"):
             return self._property_ref(name[5:])
         # NEURON's Python module adds get_segment() to every point process
