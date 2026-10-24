@@ -500,6 +500,9 @@ class Object(metaclass=_HocClassMeta):
 
     def _property_ref(self, name, idx=None):
         methods = getattr(self, "_methods", None)
+        if methods is not None and name == "delay" and name not in methods:
+            if "del" in methods:
+                name = "del"  # ic._ref_delay, as ic.delay reads del
         if methods is not None and name in methods and idx is None:
             # obj._ref_<array>: [i] gives element i, as NEURON's array pointer.
             sym = _nrn_method_symbol(self._obj, name.encode("utf-8"))
