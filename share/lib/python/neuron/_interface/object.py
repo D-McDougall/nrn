@@ -84,6 +84,9 @@ class _HocClassMeta(type):
         hoc_name = namespace.get("_hoc_class_name")
         if hoc_name:
             namespace["__doc__"] = _ClassDoc(hoc_name, namespace.get("__doc__"))
+            # As in NEURON, h.Vector and friends live in the hoc module
+            # (hoc.Vector is the same class), so pickle finds them there.
+            namespace["__module__"] = "hoc"
         return super().__new__(mcls, name, bases, namespace, **kwargs)
 
     @property
