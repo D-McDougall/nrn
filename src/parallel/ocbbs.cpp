@@ -271,6 +271,9 @@ static void pack_help(int i, OcBBS* bbs) {
             bbs->pkint(n);
             bbs->pkvec(n, px);
         } else {  // must be a PythonObject
+            if (!neuron::python::methods.po2pickle) {
+                hoc_execerror("ParallelContext: no Python available to pickle argument", nullptr);
+            }
             auto s = neuron::python::methods.po2pickle(*hoc_objgetarg(i));
             bbs->pkpickle(s);
         }
