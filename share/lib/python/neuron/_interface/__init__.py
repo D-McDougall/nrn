@@ -7,6 +7,7 @@ import ctypes
 import numbers
 import sys
 import threading
+import traceback
 
 from .api import (
     hoc_locked,
@@ -1563,8 +1564,14 @@ class NEURON(metaclass=_Singleton):
             # Measurements: benchmarks/README.md#historical-implementation-measurements.
             if not _no_epoch_bump:
                 _bump_model_epoch()
-            # The n(cmd) no-raise contract (CLAUDE.md rule 9) covers HOC errors
-            # only; a callback's Python exception is raised even by default.
+            # A callback's Python exception is raised, unless it also made the
+            # HOC command fail: then, as in NEURON, h() prints it and returns
+            # False like any other HOC error.
+            if ret != 0 and not raise_on_error:
+                try:
+                    _raise_pending_callback_exc()
+                except BaseException:
+                    traceback.print_exc()
             _raise_pending_callback_exc()
             if ret != 0 and raise_on_error:
                 raise RuntimeError(f"HOC execution failed: {cmd!r}")

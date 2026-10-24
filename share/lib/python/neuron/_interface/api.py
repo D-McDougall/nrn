@@ -802,14 +802,13 @@ def _install_cfunctype_methods():
             else:
                 callback()
             return 1
-        except BaseException:
-            # The core reports the failure from the return value; an
-            # exception must not cross ctypes. NEURON prints the same text.
-            import sys
-            import traceback
+        except BaseException as exc:
+            # An exception must not cross ctypes. NEURON raises a HOC error
+            # here; the exception is raised instead when the HOC call that
+            # ran this callback returns.
+            from . import _stash_callback_exc
 
-            print("NEURON: Python Callback failed [hoccommand_exec]:", file=sys.stderr)
-            traceback.print_exc()
+            _stash_callback_exc(exc)
             return 0
 
     _CFUNCTYPE_KEEPALIVE.append(_py_hoccommand_exec)
