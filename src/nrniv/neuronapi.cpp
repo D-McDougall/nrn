@@ -222,12 +222,15 @@ Node* segment_node(Section* sec, double x) {
 
 void nrn_segment_diam_set(Section* const sec, const double x, const double diam) {
     Node* const node = segment_node(sec, x);
-    // TODO: this is fine if no 3D points; does it work if there are 3D points?
     for (auto prop = node->prop; prop; prop = prop->next) {
         if (prop->_type == MORPHOLOGY) {
             prop->param(0) = diam;
+            // As for sec.diam(x) = d in HOC and sec(x).diam = d in Python: on a
+            // section with 3-d points, copy the new diameter into those points,
+            // because the next area recompute derives diam from them.
             diam_changed = 1;
             node->sec->recalc_area_ = 1;
+            nrn_diam_change(node->sec);
             break;
         }
     }
