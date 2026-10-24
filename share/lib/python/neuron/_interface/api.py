@@ -487,6 +487,15 @@ def _call_at_top_level(target, args):
         _hoc_symlist.value = saved_symlist
 
 
+# ParallelContext's pickling hooks (fields 2, 21 and 23): call_picklef runs a
+# submitted Python callable, pickle2po and po2pickle turn pickled bytes into a
+# PythonObject and back.
+_METHODS_CALL_PICKLEF_OFFSET = 16
+_METHODS_PICKLE2PO_OFFSET = 168
+_METHODS_PO2PICKLE_OFFSET = 184
+# neuron::python::pickle_failed (nrnpy.h): the length a failed hook reports.
+_PICKLE_FAILED = ctypes.c_size_t(-1).value
+
 # call_func (field 1): HocCommand::func_call (ivoc/objcmd.cpp) calls it to
 # evaluate a Python callable as a function of numbers, for example the
 # callable given to RangeVarPlot.

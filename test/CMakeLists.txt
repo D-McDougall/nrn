@@ -462,6 +462,32 @@ if(NRN_ENABLE_PYTHON)
     SCRIPT_PATTERNS test/parallel_tests/test_py_collectives.py
     COMMAND ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_OVERSUBSCRIBE} ${MPIEXEC_PREFLAGS}
             nrniv ${MPIEXEC_POSTFLAGS} -mpi -python test/parallel_tests/test_py_collectives.py)
+  # The bulletin board moving Python objects between ranks. Under `nrniv -python` the static build
+  # uses libnrnpython's pickling hooks and the dynamic build the pure-Python interface's.
+  foreach(nranks 2 3)
+    nrn_add_test(
+      GROUP parallel
+      NAME pc_pickle_python_${nranks}
+      PROCESSORS ${nranks}
+      PRELOAD_SANITIZER
+      REQUIRES mpi python
+      SCRIPT_PATTERNS test/parallel_tests/test_pc_pickle.py
+      ENVIRONMENT NEURON_INIT_MPI=1
+      COMMAND
+        ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} ${nranks} ${MPIEXEC_OVERSUBSCRIBE}
+        ${MPIEXEC_PREFLAGS} ${preload_sanitizer_mpiexec} ${NRN_DEFAULT_PYTHON_EXECUTABLE}
+        ${MPIEXEC_POSTFLAGS} test/parallel_tests/test_pc_pickle.py)
+    nrn_add_test(
+      GROUP parallel
+      NAME pc_pickle_nrniv_${nranks}
+      PROCESSORS ${nranks}
+      REQUIRES mpi
+      SCRIPT_PATTERNS test/parallel_tests/test_pc_pickle.py
+      COMMAND
+        ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} ${nranks} ${MPIEXEC_OVERSUBSCRIBE}
+        ${MPIEXEC_PREFLAGS} nrniv ${MPIEXEC_POSTFLAGS} -mpi -python
+        test/parallel_tests/test_pc_pickle.py)
+  endforeach()
   # TODO if we need to pass more complicated argument strings then some smarter escaping will be
   # needed
   string(JOIN " " pytest_arg_string ${pytest_args})
