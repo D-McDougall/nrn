@@ -26,6 +26,7 @@ from .api import (
     _nrn_rangevar_get,
     _nrn_rangevar_push,
     _nrn_rangevar_push_nothrow,
+    _nrn_rangevar_str_nothrow,
     _nrn_rangevar_set,
     _nrn_str_pop,
     _nrn_str_push,
@@ -186,6 +187,31 @@ class NrnRangeVarRef(NrnRef):
         except (ReferenceError, RuntimeError, ValueError):
             return f"<NrnRef to {target}: died>"
         return f"<NrnRef to {target}>"
+
+    def __str__(self):
+        # NEURON prints the data_handle, whose row= field is the node's place
+        # in the simulation's storage order. Fall back to repr when that is
+        # not available.
+        if _nrn_rangevar_str_nothrow is None:
+            return repr(self)
+        try:
+            sec = self._checked_target()[0]
+        except (ReferenceError, RuntimeError, ValueError):
+            return repr(self)
+        out = ctypes.create_string_buffer(_ERR_BUF_SIZE)
+        err = ctypes.create_string_buffer(_ERR_BUF_SIZE)
+        if _nrn_rangevar_str_nothrow(
+            self._sym,
+            sec._sec,
+            self._x,
+            self._index or 0,
+            out,
+            _ERR_BUF_SIZE,
+            err,
+            _ERR_BUF_SIZE,
+        ):
+            return repr(self)
+        return out.value.decode("utf-8", "replace")
 
     def _section(self):
         if self._sec is not None:

@@ -1846,6 +1846,22 @@ if _nrn_rangevar_push_nothrow is not None:
     ]
     _nrn_rangevar_push_nothrow.restype = ctypes.c_int
 
+# The data_handle text NEURON prints for a range variable pointer, such as
+# data_handle<double>{cont=v row=12/30}. Optional; see NrnRangeVarRef.__str__.
+_nrn_rangevar_str_nothrow = getattr(libnrniv, "nrn_rangevar_str_nothrow", None)
+if _nrn_rangevar_str_nothrow is not None:
+    _nrn_rangevar_str_nothrow.argtypes = [
+        Symbol,
+        Section,
+        ctypes.c_double,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    _nrn_rangevar_str_nothrow.restype = ctypes.c_int
+
 # Both return one owned Object* reference, or NULL for a non-live RANDOM member.
 _nrn_segment_nmodlrandom_get = _bind(
     "nrn_segment_nmodlrandom_get", Object, Section, ctypes.c_double, Symbol
