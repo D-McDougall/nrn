@@ -221,12 +221,25 @@ Node* segment_node(Section* sec, double x) {
     x = (x > 1.) ? 1. : x;
     return sec->pnode[node_index(sec, x)];
 }
+
+// Call before writing one segment's diam. After a diam write, nrn_diam_change
+// copies every segment's diam into the section's 3-d points. If the segment
+// diameters are still waiting to be derived from those points (recalc_area_,
+// e.g. right after pt3dadd), the other segments hold stale values, such as
+// the 500 µm default, which would overwrite the points' own diameters. So
+// first derive them from the points.
+void diam_before_write(Section* sec) {
+    if (sec->recalc_area_ && sec->npt3d) {
+        nrn_area_ri_no_diam_error(sec);
+    }
+}
 }  // namespace
 
 void nrn_segment_diam_set(Section* const sec, const double x, const double diam) {
     Node* const node = segment_node(sec, x);
     for (auto prop = node->prop; prop; prop = prop->next) {
         if (prop->_type == MORPHOLOGY) {
+            diam_before_write(node->sec);
             prop->param(0) = diam;
             // As for sec.diam(x) = d in HOC and sec(x).diam = d in Python: on a
             // section with 3-d points, copy the new diameter into those points,
@@ -286,6 +299,9 @@ void rangevar_written(Symbol* sym, Section* sec) {
 }  // namespace
 
 void nrn_rangevar_set(Symbol* sym, Section* sec, double x, double value) {
+    if (sym->u.rng.type == MORPHOLOGY) {
+        diam_before_write(sec);
+    }
     *nrn_rangepointer(sec, sym, x) = value;
     rangevar_written(sym, sec);
 }

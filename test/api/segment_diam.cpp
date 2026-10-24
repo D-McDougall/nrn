@@ -5,7 +5,8 @@
 // trigger that recompute so a read before any geometry pass returns the
 // 3d-derived value, matching what Python's seg.diam already does.
 // It also checks that x = 0 and x = 1 name the first and last segment, and
-// that a diam write on a section with 3-d points updates those points.
+// that a diam write on a section with 3-d points updates those points without
+// copying stale segment diameters into them.
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -157,6 +158,32 @@ int main(void) {
                        "segment diam after 3-d write matches HOC");
     }
     ok &= close_to(diam3d(api3d, 1), 42.0, "middle 3-d point takes the new diam");
+
+    // The same write on fresh sections, before anything has derived their
+    // segment diameters from the 3-d points. The untouched segments must not
+    // copy their stale default diameter (500 µm) into the 3-d points: the end
+    // points keep their 3 µm, and the result is the same as for api3d, which
+    // was read before the write. Check both C setters.
+    Section* const fresh_seg = nrn_section_new("fresh_seg");
+    Section* const fresh_rv = nrn_section_new("fresh_rv");
+    for (Section* sec: {fresh_seg, fresh_rv}) {
+        nrn_nseg_set(sec, 3);
+        for (int i = 0; i < 3; ++i) {
+            pt3dadd(sec, 10.0 * i, 0, 0, 3);
+        }
+    }
+    nrn_segment_diam_set(fresh_seg, 0.5, 42.0);
+    nrn_rangevar_set(diam_sym, fresh_rv, 0.5, 42.0);
+    for (Section* sec: {fresh_seg, fresh_rv}) {
+        ok &= close_to(diam3d(sec, 0), 3.0, "fresh 3-d write keeps the first point's diam");
+        ok &= close_to(diam3d(sec, 1), 42.0, "fresh 3-d write sets the middle point's diam");
+        ok &= close_to(diam3d(sec, 2), 3.0, "fresh 3-d write keeps the last point's diam");
+        for (double x: {1.0 / 6.0, 0.5, 5.0 / 6.0}) {
+            ok &= close_to(nrn_segment_diam_get(sec, x),
+                           nrn_segment_diam_get(api3d, x),
+                           "fresh 3-d write matches the write after a read");
+        }
+    }
 
     return ok ? 0 : 1;
 }
