@@ -7,6 +7,7 @@ import numbers
 import operator
 import os
 import sys
+import types
 import warnings
 import weakref
 
@@ -70,6 +71,17 @@ from .utils import (
 # ---------------------------------------------------------------------------
 # Metaclass — _HocClassMeta
 # ---------------------------------------------------------------------------
+
+
+class _ClassOrInstanceMethod:
+    """A method that is bound to the class when looked up on the class."""
+
+    def __init__(self, func):
+        self._func = func
+        self.__doc__ = func.__doc__
+
+    def __get__(self, instance, owner=None):
+        return types.MethodType(self._func, owner if instance is None else instance)
 
 
 class _HocClassMeta(type):
@@ -426,11 +438,18 @@ class Object(metaclass=_HocClassMeta):
             # HocObject wrapper (api.py has the reason).
             _hoc_unref_defer()
 
-    def hname(self):
+    @_ClassOrInstanceMethod
+    def hname(self_or_cls):
+        """Return the HOC name: "Vector[3]" for an object, "Vector()" for a class.
+
+        A class answers as NEURON's HOC class objects do (hclass3 uses it).
+        """
         from . import NEURON
 
-        idx = int(NEURON().object_id(self, 1))
-        return f"{self._class_name}[{idx}]"
+        if isinstance(self_or_cls, type):
+            return f"{self_or_cls._hoc_class_name}()"
+        idx = int(NEURON().object_id(self_or_cls, 1))
+        return f"{self_or_cls._class_name}[{idx}]"
 
     def baseattr(self, name):
         """Look up *name* on the HOC side, ignoring Python-level overrides.
