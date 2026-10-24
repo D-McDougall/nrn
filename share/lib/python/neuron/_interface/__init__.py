@@ -1624,8 +1624,9 @@ class NEURON(metaclass=_Singleton):
                                     # 1000-deep operand stack (hoc_nstack,
                                     # oc/code.cpp:422) overflows after ~1000
                                     # calls. Covered by tests/stress/.
-                                    _nrn_double_pop()
-                                    result = None
+                                    # The popped 0.0 is the return value, as
+                                    # in HOC.
+                                    result = _nrn_double_pop()
                                 elif _type in (TYPES.OBJECTFUNC, TYPES.OBFUNCTION):
                                     # OBJECTFUNC (296) = C built-in obfunc.
                                     # OBFUNCTION (284) = HOC `obfunc` definition.
