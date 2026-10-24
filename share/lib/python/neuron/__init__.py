@@ -467,9 +467,6 @@ def new_hoc_class(name, doc=None):
 
 
 _nrn_dll = None
-_nrn_hocobj_ptr = None
-_double_ptr = None
-_double_size = None
 
 
 def numpy_element_ref(numpy_array, index):
@@ -492,19 +489,12 @@ def numpy_element_ref(numpy_array, index):
         using slices. If the array is multi-dimensional,
         the user must figure out the integer index to the desired element.
     """
-    global _nrn_dll, _double_ptr, _double_size, _nrn_hocobj_ptr
     import ctypes
 
-    if _nrn_hocobj_ptr is None:
-        _nrn_hocobj_ptr = nrn_dll_sym("nrn_hocobj_ptr")
-        _nrn_hocobj_ptr.restype = ctypes.py_object
-        _double_ptr = ctypes.POINTER(ctypes.c_double)
-        _double_size = ctypes.sizeof(ctypes.c_double)
-    void_p = (
-        ctypes.cast(numpy_array.ctypes.data_as(_double_ptr), ctypes.c_voidp).value
-        + index * _double_size
-    )
-    return _nrn_hocobj_ptr(ctypes.cast(void_p, _double_ptr))
+    from ._interface.nrnref import NrnRawDoubleRef
+
+    address = numpy_array.ctypes.data + index * ctypes.sizeof(ctypes.c_double)
+    return NrnRawDoubleRef(address, owner=numpy_array)
 
 
 def nrn_dll_sym(name, type=None):

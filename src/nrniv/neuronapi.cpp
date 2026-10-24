@@ -16,6 +16,7 @@
 #include <exception>
 #include <cstdio>
 #include <limits>
+#include <sstream>
 #include <string>
 
 /// A public face of hoc_Item
@@ -415,6 +416,40 @@ int nrn_rangevar_push_nothrow(Symbol* sym,
             return 1;
         }
         hoc_push(std::move(handle));
+        return 0;
+    } catch (const std::exception& e) {
+        if (error_msg && error_msg_size) {
+            std::strncpy(error_msg, e.what(), error_msg_size - 1);
+            error_msg[error_msg_size - 1] = '\0';
+        }
+        return 1;
+    }
+}
+
+int nrn_rangevar_str_nothrow(Symbol* sym,
+                             Section* sec,
+                             double x,
+                             int index,
+                             char* out,
+                             size_t out_size,
+                             char* error_msg,
+                             size_t error_msg_size) {
+    if (error_msg && error_msg_size) {
+        error_msg[0] = '\0';
+    }
+    try {
+        auto handle = rangevar_handle(sym, sec, x, index, error_msg, error_msg_size);
+        if (!handle) {
+            return 1;
+        }
+        // The same text NEURON's Python module prints for seg._ref_v, e.g.
+        // data_handle<double>{cont=v row=12/30}.
+        std::ostringstream oss;
+        oss << handle;
+        if (out && out_size) {
+            std::strncpy(out, oss.str().c_str(), out_size - 1);
+            out[out_size - 1] = '\0';
+        }
         return 0;
     } catch (const std::exception& e) {
         if (error_msg && error_msg_size) {

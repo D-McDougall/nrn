@@ -1,5 +1,5 @@
 // NOTE: this assumes neuronapi.h is on your CPLUS_INCLUDE_PATH
-// nrn_rangevar_get/set/push_nothrow report an error instead of throwing for
+// nrn_rangevar_get/set/push/str_nothrow report an error instead of throwing for
 // cases where nrn_rangevar_get/set/push raise a HOC error or throw through the
 // caller: a mechanism that is not inserted, an unset POINTER, i_membrane_
 // without fast_imem, and array elements (which nrn_rangevar_get/push read from
@@ -42,6 +42,16 @@ int main(void) {
                     value == -61.5,
                 "get v");
     ok &= check(nrn_rangevar_get(v, sec, 0.5) == -61.5, "write is seen by nrn_rangevar_get");
+
+    // The data_handle text, as NEURON's Python module prints seg._ref_v.
+    char text[256]{};
+    ok &= check(nrn_rangevar_str_nothrow(v, sec, 0.5, 0, text, sizeof(text), err, sizeof(err)) ==
+                        0 &&
+                    std::strstr(text, "data_handle<double>{") == text &&
+                    std::strstr(text, " row=") != nullptr,
+                "str of v names its storage row");
+    ok &= check(nrn_rangevar_str_nothrow(v, sec, 1.5, 0, text, sizeof(text), err, sizeof(err)) != 0,
+                "str rejects x outside [0, 1]");
 
     // Mechanism not inserted: an error, not a throw.
     ok &= check(nrn_rangevar_get_nothrow(gnabar, sec, 0.5, 0, &value, err, sizeof(err)) != 0 &&

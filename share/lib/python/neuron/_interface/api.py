@@ -501,6 +501,10 @@ _METHODS_HOC_NRNPYTHON_OFFSET = 104
 # py_gather, py_broadcast and py_scatter call it and assert it is set.
 _METHODS_MPI_ALLTOALL_TYPE_OFFSET = 144
 
+# opaque_obj2pyobj (field 20): BBSaveState keys Python cells by the PyObject*
+# inside their PythonObject (nrn_opaque_obj2pyobj, hoc_oop.cpp).
+_METHODS_OPAQUE_OBJ2PYOBJ_OFFSET = 160
+
 # praxis_efun (field 24): h.fit_praxis(python_callable, vec) asserts it is set.
 _METHODS_PRAXIS_EFUN_OFFSET = 192
 
@@ -798,14 +802,13 @@ def _install_cfunctype_methods():
             else:
                 callback()
             return 1
-        except BaseException:
-            # The core reports the failure from the return value; an
-            # exception must not cross ctypes. NEURON prints the same text.
-            import sys
-            import traceback
+        except BaseException as exc:
+            # An exception must not cross ctypes. NEURON raises a HOC error
+            # here; the exception is raised instead when the HOC call that
+            # ran this callback returns.
+            from . import _stash_callback_exc
 
-            print("NEURON: Python Callback failed [hoccommand_exec]:", file=sys.stderr)
-            traceback.print_exc()
+            _stash_callback_exc(exc)
             return 0
 
     _CFUNCTYPE_KEEPALIVE.append(_py_hoccommand_exec)
@@ -1845,6 +1848,22 @@ if _nrn_rangevar_push_nothrow is not None:
         ctypes.c_size_t,
     ]
     _nrn_rangevar_push_nothrow.restype = ctypes.c_int
+
+# The data_handle text NEURON prints for a range variable pointer, such as
+# data_handle<double>{cont=v row=12/30}. Optional; see NrnRangeVarRef.__str__.
+_nrn_rangevar_str_nothrow = getattr(libnrniv, "nrn_rangevar_str_nothrow", None)
+if _nrn_rangevar_str_nothrow is not None:
+    _nrn_rangevar_str_nothrow.argtypes = [
+        Symbol,
+        Section,
+        ctypes.c_double,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    _nrn_rangevar_str_nothrow.restype = ctypes.c_int
 
 # Both return one owned Object* reference, or NULL for a non-live RANDOM member.
 _nrn_segment_nmodlrandom_get = _bind(

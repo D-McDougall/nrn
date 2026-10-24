@@ -7,6 +7,7 @@ import ctypes
 import numbers
 import sys
 import threading
+import traceback
 
 from .api import (
     hoc_locked,
@@ -15,6 +16,7 @@ from .api import (
     _METHODS_CALL_FUNC_OFFSET,
     _METHODS_HOC_NRNPYTHON_OFFSET,
     _METHODS_MPI_ALLTOALL_TYPE_OFFSET,
+    _METHODS_OPAQUE_OBJ2PYOBJ_OFFSET,
     _METHODS_PRAXIS_EFUN_OFFSET,
     _MIN_VALID_DATAPTR,
     TYPES,
@@ -57,6 +59,7 @@ from .api import (
     _nrn_class_name,
     _unwrap_pythonobject,
     _nrn_object_ref,
+    _pythonobject_payload_ptr,
     _py_pyobj_to_hoc_cfunctype,
     libnrniv,
 )
@@ -69,12 +72,14 @@ from .nrnref import (
     NrnStrRef,
     NrnVarRef,
 )
+from ._docs import _TopLevelDoc
 from .object import List, Object, SectionList, Vector
 from .sections import Section
 from .utils import (
     TEMPLATE_CONVERTERS,
     FuncWrapper,
     _is_python_object_arg,
+    check_ascii_name,
     _PythonObjectArg,
     _Singleton,
     _wrap_owned_object,
@@ -560,6 +565,133 @@ def install_rvp_rxd_hook(to_callable):
     return True
 
 
+def install_segment_hooks():
+    """Let NEURON read a segment passed to HOC as an object.
+
+    nrn_seg_or_x_arg and nrn_seg_or_x_arg2 (point.cpp) and distance()
+    (solve.cpp) accept a segment argument as a PythonObject and get its
+    section and x through nrnpy_o2loc_p_ and nrnpy_o2loc2_p_. The second
+    also accepts an object with a ``segment`` attribute, such as an rxd node,
+    or a list holding one. A hook cannot raise: on failure it leaves the
+    section NULL, which the caller reports, and the error is raised when the
+    HOC call returns. NEURON's versions (o2loc in nrnpy_nrn.cpp) exist only
+    where libnrnpython is loaded. Returns True if the hooks were installed.
+    """
+    from .sections import Segment
+
+    try:
+        slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_o2loc_p_")
+        slot2 = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_o2loc2_p_")
+    except ValueError:
+        return False
+
+    def _locate(obj, psec, px, follow_segment_attr):
+        try:
+            if not obj or _nrn_class_name(obj) != b"PythonObject":
+                raise TypeError("not a Python nrn.Segment")
+            seg = _unwrap_pythonobject(obj)
+            if follow_segment_attr and not isinstance(seg, Segment):
+                if isinstance(seg, list):
+                    if len(seg) != 1:
+                        raise TypeError("If a list is supplied, it must be of length 1")
+                    seg = seg[0]
+                if not isinstance(seg, Segment):
+                    seg = seg.segment
+            if not isinstance(seg, Segment):
+                raise TypeError("not a Python nrn.Segment")
+            seg.sec._check_alive()
+            psec[0] = seg.sec._sec
+            px[0] = seg.x
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+
+    global _mn_o2loc_cb, _mn_o2loc2_cb
+    hook_type = ctypes.CFUNCTYPE(
+        None,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_double),
+    )
+    _mn_o2loc_cb = hook_type(lambda obj, psec, px: _locate(obj, psec, px, False))
+    _mn_o2loc2_cb = hook_type(lambda obj, psec, px: _locate(obj, psec, px, True))
+    slot.value = ctypes.cast(_mn_o2loc_cb, ctypes.c_void_p).value
+    slot2.value = ctypes.cast(_mn_o2loc2_cb, ctypes.c_void_p).value
+    return True
+
+
+def install_pysec_cell_hooks():
+    """Let NEURON find the cell of a Python section, h.Section(cell=obj).
+
+    pc.gid2cell, BBSaveState and NetCon.precell ask libnrniv's
+    nrn_sec2cell (cabcode.cpp), which calls nrnpy_pysec_cell_p_ for a
+    section that HOC did not create. It returns the cell as an Object* with
+    one reference, which nrn_sec2cell gives up. nrnpy_pysec_cell_equals_p_
+    asks whether an Object* is that cell. NEURON's versions (pysec_cell in
+    nrnpy_nrn.cpp) read the cell from libnrnpython's own section objects,
+    which this interface does not create, so it installs its own. It also
+    fills methods.opaque_obj2pyobj, which BBSaveState uses to tell Python
+    cells apart, when no native provider has.
+    Returns True if the hooks were installed.
+    """
+    from .sections import PYTHON_SECTIONS
+    from .utils import _new_python_object
+
+    try:
+        cell_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_pysec_cell_p_")
+        equals_slot = ctypes.c_void_p.in_dll(libnrniv, "nrnpy_pysec_cell_equals_p_")
+    except ValueError:
+        return False
+
+    def _cell_of(sec_ptr):
+        sec = PYTHON_SECTIONS.get(sec_ptr)
+        return None if sec is None else sec.cell()
+
+    def _pysec_cell(sec_ptr):
+        try:
+            cell = _cell_of(sec_ptr)
+            if cell is None:
+                return None
+            if isinstance(cell, Object):
+                _nrn_object_ref(cell._obj)
+                return cell._obj
+            return _new_python_object(cell)
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return None
+
+    def _pysec_cell_equals(sec_ptr, obj):
+        try:
+            if not obj or _nrn_class_name(obj) != b"PythonObject":
+                return 0
+            return int(_unwrap_pythonobject(obj) is _cell_of(sec_ptr))
+        except BaseException as exc:
+            _stash_callback_exc(exc)
+            return 0
+
+    global _mn_pysec_cell_cb, _mn_pysec_cell_equals_cb
+    _mn_pysec_cell_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        _pysec_cell
+    )
+    _mn_pysec_cell_equals_cb = ctypes.CFUNCTYPE(
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p
+    )(_pysec_cell_equals)
+    cell_slot.value = ctypes.cast(_mn_pysec_cell_cb, ctypes.c_void_p).value
+    equals_slot.value = ctypes.cast(_mn_pysec_cell_equals_cb, ctypes.c_void_p).value
+
+    def _opaque_obj2pyobj(obj):
+        # Borrowed PyObject*, as NEURON's version returns (nrnpy_p2h.cpp).
+        if not obj or _nrn_class_name(obj) != b"PythonObject":
+            return None
+        return _pythonobject_payload_ptr(obj)
+
+    global _mn_opaque_obj2pyobj_cb
+    _mn_opaque_obj2pyobj_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        _opaque_obj2pyobj
+    )
+    _install_methods_slot(_METHODS_OPAQUE_OBJ2PYOBJ_OFFSET, _mn_opaque_obj2pyobj_cb)
+    return True
+
+
 def _register_vector_apply_callable():
     """Vector.apply(python_callable): core calls nrnpy_call_func per element.
 
@@ -951,6 +1083,8 @@ def hclass(cls):
 
 
 class NEURON(metaclass=_Singleton):
+    __doc__ = _TopLevelDoc()
+
     def __init__(self):
         self._nrn_hoc_call = _nrn_hoc_call
         self._top_level = list_functions()
@@ -1013,6 +1147,7 @@ class NEURON(metaclass=_Singleton):
         return sorted(names)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
         # Top-level fork of NEURON's dispatch (the component fork is
         # Object.__getattr__). Real NEURON's type-code switch is
         # nrnpython/nrnpy_hoc.cpp:1302-1407. Covered here:
@@ -1265,6 +1400,7 @@ class NEURON(metaclass=_Singleton):
         raise AttributeError(f"'NEURON' object has no attribute '{name}'")
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # Internal state (`Section`, `hclass`, every underscore-prefixed name)
         # is a real attribute. Every other name is a top-level HOC variable and
         # is written to HOC, as in real NEURON, rather than shadowed by a Python
@@ -1384,10 +1520,10 @@ class NEURON(metaclass=_Singleton):
             return
 
         # Functions, mechanisms, templates, sections: not assignable.
-        raise TypeError(f"Cannot assign to HOC symbol '{name}' (symbol type {_type}).")
+        raise TypeError(f"HOC symbol '{name}' is not assignable")
 
     def __repr__(self):
-        return "<NEURON>"
+        return "<TopLevelHocInterpreter>"
 
     def ref(self, value):
         """Return a fresh anonymous reference cell, like real NEURON's ``h.ref(x)``.
@@ -1409,6 +1545,8 @@ class NEURON(metaclass=_Singleton):
         if isinstance(value, (int, float)) or not _is_python_object_arg(value):
             return NrnDoubleRef(float(value))
         if isinstance(value, (str, bytes)):
+            if isinstance(value, str) and not value.isascii():
+                raise RuntimeError("string arg must have only ascii characters")
             return NrnStrRef(value)
         return NrnObjectRef(value)
 
@@ -1480,8 +1618,14 @@ class NEURON(metaclass=_Singleton):
             # Measurements: benchmarks/README.md#historical-implementation-measurements.
             if not _no_epoch_bump:
                 _bump_model_epoch()
-            # The n(cmd) no-raise contract (CLAUDE.md rule 9) covers HOC errors
-            # only; a callback's Python exception is raised even by default.
+            # A callback's Python exception is raised, unless it also made the
+            # HOC command fail: then, as in NEURON, h() prints it and returns
+            # False like any other HOC error.
+            if ret != 0 and not raise_on_error:
+                try:
+                    _raise_pending_callback_exc()
+                except BaseException:
+                    traceback.print_exc()
             _raise_pending_callback_exc()
             if ret != 0 and raise_on_error:
                 raise RuntimeError(f"HOC execution failed: {cmd!r}")
@@ -1785,3 +1929,5 @@ try:
 finally:
     del _probe_sec
 TYPES.validate()
+install_pysec_cell_hooks()
+install_segment_hooks()

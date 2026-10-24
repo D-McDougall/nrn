@@ -26,6 +26,7 @@ from .api import (
     _nrn_rangevar_get,
     _nrn_rangevar_push,
     _nrn_rangevar_push_nothrow,
+    _nrn_rangevar_str_nothrow,
     _nrn_rangevar_set,
     _nrn_str_pop,
     _nrn_str_push,
@@ -59,19 +60,6 @@ def _get_libc():
         lib.free.restype = None
         _libc = lib
     return _libc
-
-
-_NSEG_GENERATION = None
-
-
-def _nseg_generations():
-    # sections imports this module; bind its counter on first use.
-    global _NSEG_GENERATION
-    if _NSEG_GENERATION is None:
-        from .sections import NSEG_GENERATION
-
-        _NSEG_GENERATION = NSEG_GENERATION
-    return _NSEG_GENERATION
 
 
 def _symbol_info(name):
@@ -158,14 +146,16 @@ class NrnRangeVarRef(NrnRef):
             raise NameError(f"No such mechanism or variable: {self._name}")
         # NEURON's handle follows its node through nseg changes and dies with
         # it (sections.follow_node); _check_nseg moves _x along.
-        self._nseg = _nseg_generations().get(sec._sec, 0)
+        from .sections import sync_nseg_history
+
+        self._nseg = sync_nseg_history(sec._sec)
 
     def _check_nseg(self, sec):
-        generation = _nseg_generations().get(sec._sec, 0)
+        from .sections import follow_node, sync_nseg_history
+
+        generation = sync_nseg_history(sec._sec)
         if generation == self._nseg:
             return
-        from .sections import follow_node
-
         x = follow_node(sec._sec, self._nseg, self._x, bool(sec.orientation()))
         if x is None:
             raise ValueError("Invalid data_handle")
@@ -186,6 +176,31 @@ class NrnRangeVarRef(NrnRef):
         except (ReferenceError, RuntimeError, ValueError):
             return f"<NrnRef to {target}: died>"
         return f"<NrnRef to {target}>"
+
+    def __str__(self):
+        # NEURON prints the data_handle, whose row= field is the node's place
+        # in the simulation's storage order. Fall back to repr when that is
+        # not available.
+        if _nrn_rangevar_str_nothrow is None:
+            return repr(self)
+        try:
+            sec = self._checked_target()[0]
+        except (ReferenceError, RuntimeError, ValueError):
+            return repr(self)
+        out = ctypes.create_string_buffer(_ERR_BUF_SIZE)
+        err = ctypes.create_string_buffer(_ERR_BUF_SIZE)
+        if _nrn_rangevar_str_nothrow(
+            self._sym,
+            sec._sec,
+            self._x,
+            self._index or 0,
+            out,
+            _ERR_BUF_SIZE,
+            err,
+            _ERR_BUF_SIZE,
+        ):
+            return repr(self)
+        return out.value.decode("utf-8", "replace")
 
     def _section(self):
         if self._sec is not None:
@@ -444,6 +459,7 @@ class NrnObjectPropertyRef(NrnRef):
         # node is freed, and pushing its property then SIGABRTs. Same guard as
         # the direct ic.amp path.
         obj._check_host_alive()
+        obj._check_located()
 
         if self._idx is None:
             _property_push_checked(obj._obj, self._name)
@@ -457,6 +473,7 @@ class NrnObjectPropertyRef(NrnRef):
         if obj is None:
             raise ReferenceError("Referenced object no longer exists")
         obj._check_host_alive()  # HOC-deleted host: clean raise, not SIGABRT.
+        obj._check_located()
 
         if self._idx is None:
             return _property_get_checked(obj._obj, self._name)
@@ -470,6 +487,7 @@ class NrnObjectPropertyRef(NrnRef):
         if obj is None:
             raise ReferenceError("Referenced object no longer exists")
         obj._check_host_alive()  # HOC-deleted host: clean raise, not SIGABRT.
+        obj._check_located()
 
         if self._idx is None:
             _ref_property_set_checked(obj._obj, self._name, value)
@@ -761,6 +779,40 @@ class NrnDoubleRef(NrnRef):
         if idx != 0:
             raise IndexError("Only index 0 is supported")
         self._cell.value = float(value)
+
+
+class NrnRawDoubleRef(NrnRef):
+    """Pointer to a double that HOC does not own, from numpy_element_ref.
+
+    Like NEURON's raw pointer, ``[k]`` reads the double ``k`` places further
+    on, without bounds checking. ``owner`` (the numpy array) is kept alive so
+    the address stays valid while this reference exists.
+    """
+
+    __slots__ = ("_address", "_owner")
+
+    def __init__(self, address, owner=None):
+        self._address = address
+        self._owner = owner
+
+    def _element(self, idx=0):
+        if isinstance(idx, bool) or not isinstance(idx, numbers.Integral):
+            raise TypeError(f"indices must be integers, not {type(idx).__name__}")
+        return ctypes.cast(
+            self._address + 8 * int(idx), ctypes.POINTER(ctypes.c_double)
+        )
+
+    def __repr__(self):
+        return f"<NrnRef to double at 0x{self._address:x}>"
+
+    def _push(self):
+        _nrn_double_ptr_push(self._element())
+
+    def __getitem__(self, idx):
+        return self._element(idx)[0]
+
+    def __setitem__(self, idx, value):
+        self._element(idx)[0] = float(value)
 
 
 class NrnStrRef(NrnRef):

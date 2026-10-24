@@ -49,6 +49,7 @@ from .nrnref import NrnRangeArrayRef, NrnRangeVarRef, NrnRef
 from .utils import (
     _try_wrap_density_nmodlrandom,
     list_functions,
+    check_ascii_name,
     list_methods,
 )
 
@@ -180,7 +181,9 @@ def _pointer_rangevar_get(section, x, name):
 def _pointer_rangevar_set(section, x, name, value):
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ValueError(f"bad value for {name}: must be a double")
-    _call_pointer_proc(section, x, name, "_mn_ptr_set", float(value))
+    result = _call_pointer_proc(section, x, name, "_mn_ptr_set", float(value))
+    if isinstance(result, OpaquePointer):
+        raise ValueError("can't assign value to opaque pointer")
 
 
 # ── _ArrayRangeVar ────────────────────────────────────────────────────────────
@@ -515,6 +518,7 @@ class Segment:
         return int(_nrn_segment_node_index(self._sec._sec, self._x))
 
     def __dir__(self):
+        self._sec._check_alive()
         attrs = set(super().__dir__())
         # Standard segment attributes always available
         attrs.update(
@@ -555,6 +559,11 @@ class Segment:
         return sorted(attrs)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
+        if name.startswith("__") and name.endswith("__"):
+            # NEURON checks the section on every attribute; pydoc's
+            # __name__ probe makes help(seg) raise for a deleted section.
+            self._sec._check_alive()
         if name.startswith("_ref_"):
             name = name[5:]
             info = _get_symbol_info(name)
@@ -564,7 +573,9 @@ class Segment:
             if info[2]:
                 return NrnRangeArrayRef(self.sec, self.x, name)
             if _is_pointer_rangevar(name, info[0]):
-                _pointer_rangevar_get(self.sec, self.x, name)  # raises if unset
+                value = _pointer_rangevar_get(self.sec, self.x, name)  # raises if unset
+                if isinstance(value, OpaquePointer):
+                    return value  # as NEURON: no reference to a non-double
             return NrnRangeVarRef(self.sec, self.x, name)
 
         # Mechanism instance cache (Segment._mech_cache).
@@ -700,6 +711,7 @@ class Segment:
         # when its last reference goes) would then live until the next
         # garbage collection. NEURON frees it at once (test_nrntest_thread
         # counted an extra cell's mechanism instances).
+        self._sec._check_alive()
         return Segment(self._sec, self._x)
 
     def _assign_suffixed_pointer(self, suffixed, src_ref):
@@ -716,6 +728,7 @@ class Segment:
         )
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # seg._ref_p_t2 = ref wires mechanism t2's POINTER p, the same as
         # seg.t2._ref_p = ref (NEURON's test_pnt2).
         if name.startswith("_ref_") and isinstance(value, NrnRef):
@@ -845,7 +858,7 @@ _anon_section_count = 0
 # range-variable references record it at creation: NEURON frees the old nodes'
 # storage when nseg changes, so they die. A dict read is far cheaper than
 # reading nseg through the C API on every wrapper creation. An nseg change made
-# from HOC code is not counted.
+# from HOC code is counted only when sync_nseg_history next sees it.
 NSEG_GENERATION = {}
 
 # nseg at each generation, per section pointer: NSEG_HISTORY[sec][g]. NEURON
@@ -862,6 +875,24 @@ def _record_nseg_change(sec_ptr, old, new):
         history = NSEG_HISTORY[sec_ptr] = [old]
     history.append(new)
     NSEG_GENERATION[sec_ptr] = len(history) - 1
+
+
+def sync_nseg_history(sec_ptr):
+    """Record an nseg change made from HOC since the last record.
+
+    Returns the section's current generation. Range-variable references call
+    it when they are made and before each use, so a reference follows (or
+    dies with) its node through nseg changes that HOC code makes, too.
+    Several HOC changes between two calls count as one.
+    """
+    current = int(_nrn_nseg_get(sec_ptr))
+    history = NSEG_HISTORY.get(sec_ptr)
+    if history is None:
+        NSEG_HISTORY[sec_ptr] = [current]
+        NSEG_GENERATION[sec_ptr] = 0
+    elif history[-1] != current:
+        _record_nseg_change(sec_ptr, history[-1], current)
+    return NSEG_GENERATION[sec_ptr]
 
 
 def follow_node(sec_ptr, generation, x, reversed_):
@@ -930,6 +961,9 @@ class Section:
     def __init__(self, name=None, cell=None, _pynative=True):
         if cell is not None and isinstance(cell, str):
             raise TypeError("cell must be an object, not a string")
+        cell_name = None if cell is None else str(cell)
+        if cell_name is not None and not cell_name.isascii():
+            raise ValueError("cell name contains non ascii character")
         if name is None:
             # No name: auto-generate a unique one, as real NEURON does.
             global _anon_section_count
@@ -941,7 +975,10 @@ class Section:
             # two names differing only after a NUL would collapse into one.
             # Reject like real NEURON.
             raise ValueError("embedded null character")
-        self._sec = _nrn_section_new(name.encode("utf-8"))
+        # HOC's name includes the cell, as NEURON's secname() does for a
+        # Python section with a cell: "Cell0.soma".
+        hoc_name = name if cell_name is None else f"{cell_name}.{name}"
+        self._sec = _nrn_section_new(hoc_name.encode("utf-8"))
         self._pynative = _pynative
         if _pynative:
             PYTHON_SECTIONS[self._sec] = self
@@ -989,6 +1026,7 @@ class Section:
         return hash(self._sec)
 
     def __setattr__(self, name, value):
+        check_ascii_name(name)
         # Private names and known @property setters go to super();
         # everything else broadcasts across segments, matching real NEURON's
         # `sec.gnabar_hh = ...` semantics.
@@ -1062,6 +1100,7 @@ class Section:
         return sorted(attrs)
 
     def __getattr__(self, name):
+        check_ascii_name(name)
         # An unset _sec slot (partial __init__) would recurse through
         # _check_alive; raise AttributeError directly instead.
         try:
@@ -1082,9 +1121,16 @@ class Section:
 
     def allseg(self):
         """Iterate all segments including endpoints at x=0 and x=1."""
-        yield self(0)
-        yield from self
-        yield self(1)
+        # Not a generator: a deleted section raises here, as in NEURON,
+        # rather than at the first next().
+        self._check_alive()
+
+        def segments():
+            yield self(0)
+            yield from self
+            yield self(1)
+
+        return segments()
 
     def insert(self, mechanism):
         from .mechanism import DensityMechanism
@@ -1196,9 +1242,6 @@ class Section:
         raw = NEURON().secname(sec=self)
         if raw.startswith("_pysec."):
             raw = raw[7:]
-        cell = self.cell()
-        if cell is not None:
-            return f"{cell}.{raw}"
         return raw
 
     def __repr__(self):
@@ -1388,6 +1431,7 @@ class Section:
         """Return the parent Segment, or None if this is a root section."""
         from . import NEURON
 
+        self._check_alive()
         n = NEURON()
         parent_ptr = _nrn_section_parent(self._sec)
         if not parent_ptr:
@@ -1402,6 +1446,7 @@ class Section:
         Walks the section's own child/sibling chain via the nrn#3835 accessors,
         in the same order as real NEURON's ``SectionRef.child[i]``.
         """
+        self._check_alive()
         result = []
         child_ptr = _nrn_section_child(self._sec)
         while child_ptr:

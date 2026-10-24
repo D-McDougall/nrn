@@ -22,6 +22,7 @@ from .utils import (
     FuncWrapper,
     _try_wrap_density_nmodlrandom,
     list_functions,
+    check_ascii_name,
 )
 
 # Mechanisms that are always present and should be skipped during iteration
@@ -125,6 +126,7 @@ class RangeVar:
         """The Mechanism this variable belongs to, as NEURON's RangeVar.mech()."""
         if self._mech is None:
             raise AttributeError("RangeVar has no mechanism")
+        self._mech._check_valid()
         return self._mech
 
     def __getitem__(self, idx):
@@ -262,9 +264,11 @@ class Mechanism:
 
     def segment(self):
         """The segment this mechanism belongs to (a method, as in NEURON)."""
+        self._check_valid()
         return self._seg
 
     def is_ion(self):
+        self._check_valid()
         return self._is_ion
 
     def _varnames(self):
@@ -319,10 +323,15 @@ class Mechanism:
 
     def __getattr__(self, name):
         """Resolve unsuffixed attribute name to a range variable read or an NMODL function wrapper."""
+        check_ascii_name(name)
         # HOC can delete the host section while this Mechanism is held; check
         # before touching freed Section*/node storage. Dunder probes
-        # (copy/pickle) skip the check and raise AttributeError as usual.
-        if not (name.startswith("__") and name.endswith("__")):
+        # (copy/pickle, pydoc's __name__) check only that the section is
+        # alive, as NEURON does for any attribute, and otherwise raise
+        # AttributeError as usual.
+        if name.startswith("__") and name.endswith("__"):
+            self._seg._sec._check_alive()
+        else:
             # An uninserted mechanism leaves the section alive but frees its
             # prop, so a range-var read SIGABRTs where real NEURON raises
             # ReferenceError. Revalidation is a cheap epoch compare except
@@ -334,6 +343,7 @@ class Mechanism:
             var = name[5:]
             full = var if self._is_ion else "%s_%s" % (var, self._name)
             from .sections import (
+                OpaquePointer,
                 _get_symbol_info,
                 _is_pointer_rangevar,
                 _pointer_rangevar_get,
@@ -348,9 +358,11 @@ class Mechanism:
                 return NrnRangeArrayRef(self._seg._sec, self._seg._x, full)
             sym = _nrn_symbol(full.encode("utf-8"))
             if sym and _is_pointer_rangevar(full, sym):
-                _pointer_rangevar_get(
+                value = _pointer_rangevar_get(
                     self._seg._sec, self._seg._x, full
                 )  # raises if unset
+                if isinstance(value, OpaquePointer):
+                    return value  # as NEURON: no reference to a non-double
             return NrnRangeVarRef(self._seg._sec, self._seg._x, full)
         cache = _MECH_ATTR_CACHE.get(self._name)
         if cache is None:
@@ -495,6 +507,7 @@ class Mechanism:
 
     def __setattr__(self, name, value):
         """Write unsuffixed range variable on the mechanism at the current segment; populates cache."""
+        check_ascii_name(name)
         # POINTER assignment: seg.mech._ref_PTR = src._ref_X.
         if name.startswith("_ref_"):
             if isinstance(value, NrnRef):
@@ -567,8 +580,8 @@ class Mechanism:
 
     def __iter__(self):
         """Iterate over RangeVar objects for this mechanism."""
-        for full_name in self._varnames():
-            yield RangeVar(self._seg, full_name, mech=self)
+        self._check_valid()
+        return (RangeVar(self._seg, n, mech=self) for n in self._varnames())
 
     @property
     def __dict__(self):
@@ -584,6 +597,7 @@ class Mechanism:
         return dict.fromkeys(sorted(names))
 
     def __dir__(self):
+        self._check_valid()
         names = set()
         # Range variables: hh exposes "gnabar", "m", etc. (unsuffixed)
         for full_name in self._varnames():

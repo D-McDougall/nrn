@@ -32,6 +32,12 @@ from .nrnref import (
 )
 
 
+def check_ascii_name(name):
+    """Raise TypeError for a non-ascii attribute name, as NEURON does."""
+    if not name.isascii():
+        raise TypeError(f"attribute name must contain only ascii characters: {name!r}")
+
+
 class FuncWrapper:
     # __doc__ is a property backed by the _doc slot (a class variable and a
     # same-named slot would clash). Lookup is deferred to avoid help I/O
@@ -307,6 +313,7 @@ def _push_args(args, return_rollback=False):
     temp_strs = []
     seg_sec = None
     descriptors = []  # (kind, payload); object kinds are borrowed or owned
+    segments = []  # (descriptor index, Segment)
 
     # PASS 1: resolve/validate only, no pushes.
     try:
@@ -315,6 +322,7 @@ def _push_args(args, return_rollback=False):
                 # A Segment contributes its x and supplies section context.
                 arg.sec._check_alive()
                 seg_sec = arg.sec
+                segments.append((len(descriptors), arg))
                 descriptors.append(("double", float(arg.x)))
             elif arg is None:
                 descriptors.append(("object", None))
@@ -326,7 +334,12 @@ def _push_args(args, return_rollback=False):
             elif isinstance(arg, NrnRef):
                 descriptors.append(("ref", arg))
             elif isinstance(arg, (str, bytes)):
-                b = arg.encode("utf-8") if isinstance(arg, str) else arg
+                if isinstance(arg, str):
+                    if not arg.isascii():
+                        raise RuntimeError("string arg must have only ascii characters")
+                    b = arg.encode("ascii")
+                else:
+                    b = arg
                 c_arg = ctypes.c_char_p(b)
                 temp_strs.append(c_arg)
                 descriptors.append(("str", ctypes.pointer(c_arg)))
@@ -345,6 +358,12 @@ def _push_args(args, return_rollback=False):
                         "HOC function: numeric scalar conversion to double failed."
                     ) from None
                 descriptors.append(("double", d))
+        if len(segments) > 1:
+            # One section context cannot serve two segments, so pass each as
+            # an object, as NEURON does; nrnpy_o2loc_p_ gives back its
+            # section and x (install_segment_hooks).
+            for index, segment in segments:
+                descriptors[index] = ("owned_object", _new_python_object(segment))
     except BaseException:
         for kind, payload in descriptors:
             if kind == "owned_object" and payload:
