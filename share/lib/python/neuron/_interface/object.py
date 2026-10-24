@@ -462,8 +462,17 @@ class Object(metaclass=_HocClassMeta):
         misses, so this calls it directly. It uses `Object.__getattr__`, not
         `type(self).__getattr__`, so subclasses can override `__getattr__`
         for non-HOC reasons.
+
+        The lookup goes through a second wrapper of the same HOC object, so a
+        method kept on the instance (``self.bp = self.baseattr("p")``) does not
+        form a reference cycle, and the HOC object is freed with its last
+        Python reference, without waiting for garbage collection.
         """
-        return Object.__getattr__(self, name)
+        from .api import _nrn_object_ref
+        from .utils import _wrap_owned_object
+
+        _nrn_object_ref(self._obj)
+        return Object.__getattr__(_wrap_owned_object(self._obj), name)
 
     def __repr__(self):
         return self.hname()
