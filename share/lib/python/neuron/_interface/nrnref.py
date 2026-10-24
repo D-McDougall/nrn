@@ -792,6 +792,40 @@ class NrnDoubleRef(NrnRef):
         self._cell.value = float(value)
 
 
+class NrnRawDoubleRef(NrnRef):
+    """Pointer to a double that HOC does not own, from numpy_element_ref.
+
+    Like NEURON's raw pointer, ``[k]`` reads the double ``k`` places further
+    on, without bounds checking. ``owner`` (the numpy array) is kept alive so
+    the address stays valid while this reference exists.
+    """
+
+    __slots__ = ("_address", "_owner")
+
+    def __init__(self, address, owner=None):
+        self._address = address
+        self._owner = owner
+
+    def _element(self, idx=0):
+        if isinstance(idx, bool) or not isinstance(idx, numbers.Integral):
+            raise TypeError(f"indices must be integers, not {type(idx).__name__}")
+        return ctypes.cast(
+            self._address + 8 * int(idx), ctypes.POINTER(ctypes.c_double)
+        )
+
+    def __repr__(self):
+        return f"<NrnRef to double at 0x{self._address:x}>"
+
+    def _push(self):
+        _nrn_double_ptr_push(self._element())
+
+    def __getitem__(self, idx):
+        return self._element(idx)[0]
+
+    def __setitem__(self, idx, value):
+        self._element(idx)[0] = float(value)
+
+
 class NrnStrRef(NrnRef):
     """Fresh anonymous string cell, like real NEURON's ``h.ref('')``.
 
