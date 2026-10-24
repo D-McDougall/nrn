@@ -437,6 +437,31 @@ if(NRN_ENABLE_PYTHON)
     SCRIPT_PATTERNS test/parallel_tests/test_bas.py
     COMMAND ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_OVERSUBSCRIBE} ${MPIEXEC_PREFLAGS}
             nrniv ${MPIEXEC_POSTFLAGS} -mpi -python test/parallel_tests/test_bas.py)
+  # ParallelContext's py_alltoall family on 1 to 3 ranks, run by the pure-Python interface.
+  foreach(nranks 1 2 3)
+    nrn_add_test(
+      GROUP parallel
+      NAME py_collectives_python_${nranks}
+      PROCESSORS ${nranks}
+      PRELOAD_SANITIZER
+      REQUIRES mpi python
+      SCRIPT_PATTERNS test/parallel_tests/test_py_collectives.py
+      ENVIRONMENT NEURON_INIT_MPI=1
+      COMMAND
+        ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} ${nranks} ${MPIEXEC_OVERSUBSCRIBE}
+        ${MPIEXEC_PREFLAGS} ${preload_sanitizer_mpiexec} ${NRN_DEFAULT_PYTHON_EXECUTABLE}
+        ${MPIEXEC_POSTFLAGS} test/parallel_tests/test_py_collectives.py)
+  endforeach()
+  # The same script under `nrniv -mpi -python`: checks that the pure-Python interface's implementation
+  # is also used there, in place of libnrnpython's, and works.
+  nrn_add_test(
+    GROUP parallel
+    NAME py_collectives_nrniv_3
+    PROCESSORS 3
+    REQUIRES mpi
+    SCRIPT_PATTERNS test/parallel_tests/test_py_collectives.py
+    COMMAND ${MPIEXEC_NAME} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_OVERSUBSCRIBE} ${MPIEXEC_PREFLAGS}
+            nrniv ${MPIEXEC_POSTFLAGS} -mpi -python test/parallel_tests/test_py_collectives.py)
   # TODO if we need to pass more complicated argument strings then some smarter escaping will be
   # needed
   string(JOIN " " pytest_arg_string ${pytest_args})
