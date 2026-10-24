@@ -1042,6 +1042,11 @@ class Object(metaclass=_HocClassMeta):
                             result = _object_pop()
                         elif _type == TYPES.METHOD_STRFUNC:
                             result = _nrn_str_pop()
+                        elif _type == TYPES.PROCEDURE:
+                            # A HOC proc returns 0.0, as in HOC. Nothing to pop:
+                            # hoc_call_ob_proc already removed the 0.0 that
+                            # hoc_procret pushed.
+                            result = 0.0
                         else:
                             warnings.warn(f"Ignoring unknown return type {_type}")
                             result = None
