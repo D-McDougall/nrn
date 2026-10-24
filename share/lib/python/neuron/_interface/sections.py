@@ -961,7 +961,8 @@ class Section:
     def __init__(self, name=None, cell=None, _pynative=True):
         if cell is not None and isinstance(cell, str):
             raise TypeError("cell must be an object, not a string")
-        if cell is not None and not str(cell).isascii():
+        cell_name = None if cell is None else str(cell)
+        if cell_name is not None and not cell_name.isascii():
             raise ValueError("cell name contains non ascii character")
         if name is None:
             # No name: auto-generate a unique one, as real NEURON does.
@@ -974,7 +975,10 @@ class Section:
             # two names differing only after a NUL would collapse into one.
             # Reject like real NEURON.
             raise ValueError("embedded null character")
-        self._sec = _nrn_section_new(name.encode("utf-8"))
+        # HOC's name includes the cell, as NEURON's secname() does for a
+        # Python section with a cell: "Cell0.soma".
+        hoc_name = name if cell_name is None else f"{cell_name}.{name}"
+        self._sec = _nrn_section_new(hoc_name.encode("utf-8"))
         self._pynative = _pynative
         if _pynative:
             PYTHON_SECTIONS[self._sec] = self
@@ -1238,9 +1242,6 @@ class Section:
         raw = NEURON().secname(sec=self)
         if raw.startswith("_pysec."):
             raw = raw[7:]
-        cell = self.cell()
-        if cell is not None:
-            return f"{cell}.{raw}"
         return raw
 
     def __repr__(self):
