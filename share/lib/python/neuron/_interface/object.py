@@ -24,6 +24,11 @@ from .api import (
     _nrn_method_symbol,
     _nrn_pp_setpointer_pop,
     _nrn_prop_exists,
+    _nrn_property_array_get,
+    _nrn_property_array_set,
+    _nrn_property_data_handle_is_valid,
+    _nrn_property_get,
+    _nrn_property_set,
     _nrn_section_pop,
     _nrn_section_push,
     _nrn_sectionlist_data,
@@ -1028,49 +1033,31 @@ class Object(metaclass=_HocClassMeta):
         raise AttributeError(f"'{self._class_name}' object has no attribute '{name}'")
 
 
-# User HOC-template numeric members. nrn_property_get/set go through
-# ctemplate->steer, which pure HOC templates lack (they use object dataspace).
-# VAR members are read and written through HOC itself, as real NEURON does.
-_HOC_TEMPLATE_VAR_TRAMPOLINES = set()
-
-
-def _ensure_hoc_template_var_trampolines(name, array):
-    key = (name, bool(array))
-    if key in _HOC_TEMPLATE_VAR_TRAMPOLINES:
-        return
-    from . import NEURON
-
-    n = NEURON()
-    kind = "a" if array else "s"
-    get_name = f"_mn_hvget_{kind}_{name}"
-    set_name = f"_mn_hvset_{kind}_{name}"
-    if array:
-        n(f"func {get_name}() {{ return $o1.{name}[$2] }}")
-        n(f"proc {set_name}() {{ $o1.{name}[$2] = $3 }}")
-    else:
-        n(f"func {get_name}() {{ return $o1.{name} }}")
-        n(f"proc {set_name}() {{ $o1.{name} = $2 }}")
-    _HOC_TEMPLATE_VAR_TRAMPOLINES.add(key)
+# User HOC-template numeric members, public or not, as NEURON's Python module
+# allows. libnrniv's nrn_property_* functions read them from the object's
+# dataspace.
+def _template_var_element(owner, name, idx):
+    name_encoded = name.encode("utf-8")
+    i = 0 if idx is None else int(idx)
+    if not _nrn_property_data_handle_is_valid(owner._obj, name_encoded, i):
+        raise IndexError(f"{owner._class_name}.{name}[{i}] is out of range")
+    return name_encoded, i
 
 
 def _read_hoc_template_var(owner, name, idx=None):
-    from . import NEURON
-
-    array = idx is not None
-    _ensure_hoc_template_var_trampolines(name, array)
-    fn = f"_mn_hvget_{'a' if array else 's'}_{name}"
-    args = (owner, idx) if array else (owner,)
-    return getattr(NEURON(), fn)(*args)
+    name_encoded, i = _template_var_element(owner, name, idx)
+    if idx is None:
+        return _nrn_property_get(owner._obj, name_encoded)
+    return _nrn_property_array_get(owner._obj, name_encoded, i)
 
 
 def _write_hoc_template_var(owner, name, value, idx=None):
-    from . import NEURON
-
-    array = idx is not None
-    _ensure_hoc_template_var_trampolines(name, array)
-    fn = f"_mn_hvset_{'a' if array else 's'}_{name}"
-    args = (owner, idx, float(value)) if array else (owner, float(value))
-    getattr(NEURON(), fn)(*args)
+    value = float(value)
+    name_encoded, i = _template_var_element(owner, name, idx)
+    if idx is None:
+        _nrn_property_set(owner._obj, name_encoded, value)
+    else:
+        _nrn_property_array_set(owner._obj, name_encoded, i, value)
 
 
 # HOC has no user-defined string-returning function syntax. Read a template
